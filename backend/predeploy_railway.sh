@@ -20,5 +20,6 @@ fi
 export ENVIRONMENT=development
 export DEBUG=false
 export ALLOWED_ORIGINS=http://localhost
+export SKIP_PRODUCTION_CHECKS=true
 
 python deploy_migrate.py

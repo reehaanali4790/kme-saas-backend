@@ -14,6 +14,8 @@ from modules.tenants.provision import (
     create_platform_and_shared_tables,
     seed_platform_plans,
     provision_default_tenant_if_missing,
+    create_tenant_tables,
+    seed_tenant_defaults,
 )
 
 
@@ -24,6 +26,8 @@ def main():
         create_platform_and_shared_tables(db)
         seed_platform_plans(db)
         org = provision_default_tenant_if_missing(db)
+        create_tenant_tables(db, org.schema_name)
+        seed_tenant_defaults(db, org.schema_name, org.name)
         print(f"Platform schema: {PLATFORM_SCHEMA}")
         print(f"Shared schema: {SHARED_SCHEMA}")
         print(f"Default tenant: {org.slug} -> {org.schema_name}")

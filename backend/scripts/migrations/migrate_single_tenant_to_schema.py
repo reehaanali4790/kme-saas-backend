@@ -70,6 +70,17 @@ def backfill_memberships(db, org_id: int):
             AuthService.add_membership(db, user.user_id, org_id, "ADMIN", is_default=True)
 
 
+def _public_business_table_count(db) -> int:
+    row = db.execute(text("""
+        SELECT COUNT(*) FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+          AND table_name NOT IN (
+            'spatial_ref_sys'
+          )
+    """)).scalar()
+    return int(row or 0)
+
+
 def main():
     db = SessionLocal()
     try:
@@ -79,6 +90,17 @@ def main():
 
         org = provision_default_tenant_if_missing(db)
         tenant_schema = org.schema_name
+
+        # Fresh SaaS deploy: migrate_platform_schema already created tenant_* tables.
+        # Only run legacy public→schema moves when old single-schema tables still exist.
+        public_count = _public_business_table_count(db)
+        if public_count == 0:
+            print("SKIP legacy public migration — no public tables (already multi-tenant).")
+            create_tenant_tables(db, tenant_schema)
+            seed_tenant_defaults(db, tenant_schema, org.name)
+            backfill_memberships(db, org.organization_id)
+            print(f"Migration complete. Default org: {org.slug} schema={tenant_schema}")
+            return
 
         for t in SHARED_TABLES:
             move_table_to_schema(db, t, SHARED_SCHEMA)

@@ -11,6 +11,8 @@ echo "PORT=${PORT:-8000}"
 echo "ENVIRONMENT=${ENVIRONMENT:-not set}"
 echo "DEBUG=${DEBUG:-not set}"
 echo "DATABASE_URL set: $(test -n "${DATABASE_URL:-}" && echo yes || echo NO)"
+echo "APP_PUBLIC_URL=${APP_PUBLIC_URL:-not set}"
+echo "ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-not set}"
 
 python - <<'PY'
 import sys

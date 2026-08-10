@@ -36,12 +36,37 @@ def ensure_platform_and_shared_schemas(db: Session) -> None:
 
 
 def seed_platform_plans(db: Session) -> None:
+    from config.settings import settings
+
+    stripe_map = {
+        "operations": {
+            "monthly": settings.STRIPE_PRICE_OPS_MONTHLY,
+            "annual": settings.STRIPE_PRICE_OPS_ANNUAL,
+        },
+        "trade-desk": {
+            "monthly": settings.STRIPE_PRICE_TD_MONTHLY,
+            "annual": settings.STRIPE_PRICE_TD_ANNUAL,
+        },
+    }
+
     set_platform_search_path(db)
     for plan_data in DEFAULT_PLANS:
-        existing = db.query(Plan).filter(Plan.slug == plan_data["slug"]).first()
+        slug = plan_data["slug"]
+        prices = stripe_map.get(slug, {})
+        payload = dict(plan_data)
+        if prices.get("monthly"):
+            payload["stripe_price_monthly_id"] = prices["monthly"]
+        if prices.get("annual"):
+            payload["stripe_price_annual_id"] = prices["annual"]
+
+        existing = db.query(Plan).filter(Plan.slug == slug).first()
         if existing:
+            if prices.get("monthly") and not existing.stripe_price_monthly_id:
+                existing.stripe_price_monthly_id = prices["monthly"]
+            if prices.get("annual") and not existing.stripe_price_annual_id:
+                existing.stripe_price_annual_id = prices["annual"]
             continue
-        db.add(Plan(**plan_data))
+        db.add(Plan(**payload))
     db.commit()
 
 
