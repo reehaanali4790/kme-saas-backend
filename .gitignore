@@ -1,0 +1,41 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+env
+logs/
+uploads/
+*.log
+.qodo/
+.playwright-mcp/
+server_out.log
+server_err.log
+# Test screenshots from verification runs
+bl04_*.png
+bl06_*.png
+bl_*.png
+bl_*.jpeg
+lc_table_*.png
+
+# Root-level test screenshots (not docs/ images)
+/*.png
+
+# Docs folder (internal plans, samples, screenshots)
+docs/
+
+# Sample/reference document bundles - don't commit binary archives to git
+*.zip
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local credential exports — never commit
+*credentials*.csv
+Districtwise_participant_credentials.csv
+
+# Sample/reference document bundles shipped outside git
+0486 complete set  IB -Eb/
+604405/

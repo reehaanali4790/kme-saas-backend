@@ -1,0 +1,12 @@
+# Pyrefly Configuration File
+# Documentation: https://pyrefly.org/docs/configuration/
+
+# Define the source files to include in type checking
+project-includes = [
+    "backend/**/*.py"
+]
+
+# Set the import lookup directories for local packages
+search-path = [
+    "backend"
+]

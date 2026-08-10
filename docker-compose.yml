@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: lme
+      POSTGRES_PASSWORD: lme
+      POSTGRES_DB: lme_monitoring
+    ports:
+      - "5432:5432"
+    volumes:
+      - lme_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lme"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    env_file:
+      - backend/.env
+    environment:
+      # Overrides backend/.env's DATABASE_URL to point at the compose db service.
+      DATABASE_URL: postgresql://lme:lme@db:5432/lme_monitoring
+      PORT: "8000"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend/uploads:/app/backend/uploads
+      - ./backend/logs:/app/backend/logs
+
+volumes:
+  lme_pgdata:

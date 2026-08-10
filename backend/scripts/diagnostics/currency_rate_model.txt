@@ -1,0 +1,22 @@
+# Add this to your database_models.py file
+
+from sqlalchemy import Column, Integer, String, Numeric, Date, DateTime, Text, ForeignKey
+from sqlalchemy.ext.declarative import declarative_base
+
+Base = declarative_base()
+
+# Add this new model to your existing database_models.py
+
+class CurrencyRate(Base):
+    __tablename__ = 'currency_rates'
+    
+    rate_id = Column(Integer, primary_key=True)
+    rate_date = Column(Date, unique=True, nullable=False)
+    usd_rate = Column(Numeric(10, 4), nullable=False)
+    eur_rate = Column(Numeric(10, 4), nullable=False)
+    source = Column(String(50), default='Manual')
+    notes = Column(Text)
+    created_at = Column(DateTime)
+    created_by = Column(Integer, ForeignKey('users.user_id'))
+    updated_at = Column(DateTime)
+    updated_by = Column(Integer, ForeignKey('users.user_id'))

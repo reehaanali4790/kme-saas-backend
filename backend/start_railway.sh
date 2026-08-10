@@ -1,0 +1,35 @@
+#!/bin/sh
+# Railway web process — log config diagnostics before uvicorn so deploy logs
+# are never empty when startup fails.
+set -eu
+
+echo "=========================================="
+echo "LME Monitoring System - Railway startup"
+echo "=========================================="
+echo "PWD=$(pwd)"
+echo "PORT=${PORT:-8000}"
+echo "ENVIRONMENT=${ENVIRONMENT:-not set}"
+echo "DEBUG=${DEBUG:-not set}"
+echo "DATABASE_URL set: $(test -n "${DATABASE_URL:-}" && echo yes || echo NO)"
+
+python - <<'PY'
+import sys
+
+try:
+    from config.settings import settings
+except Exception as exc:
+    print("FATAL: settings failed to load:", exc, file=sys.stderr)
+    print(
+        "\nIf ENVIRONMENT=production, you must set:\n"
+        "  DEBUG=false\n"
+        "  ALLOWED_ORIGINS=https://your-frontend-domain.com\n"
+        "  SECRET_KEY=<random 32+ chars>\n",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+print(f"Settings OK — environment={settings.ENVIRONMENT} debug={settings.DEBUG}")
+print(f"CORS origins={settings.cors_origins}")
+PY
+
+exec uvicorn main:app --host 0.0.0.0 --port "${PORT:-8000}" --log-level info

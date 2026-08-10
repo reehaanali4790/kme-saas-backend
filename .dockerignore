@@ -1,0 +1,19 @@
+venv/
+__pycache__/
+*.pyc
+.git/
+.github/
+logs/
+uploads/
+.env
+*.zip
+*.log
+docs/
+node_modules/
+.pytest_cache/
+*credentials*.csv
+Districtwise_participant_credentials.csv
+0486 complete set  IB -Eb/
+604405/
+.claude/
+.vscode/
