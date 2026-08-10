@@ -1,18 +1,16 @@
-"""Trigram search acceleration for the leading-wildcard ilike('%term%') searches used
-across the reports, shipments list, and LC table (lc_number, importer_name, vessel_name,
-shipment_ref) — a plain B-tree index cannot serve a leading-wildcard pattern at all, so
-these columns were previously always sequential-scanned on every search keystroke.
+"""Trigram search acceleration for leading-wildcard ilike('%term%') searches.
 
-pg_trgm's GIN index lets Postgres use an index scan for ilike('%term%') with NO query
-code changes required — the existing ilike() calls benefit automatically once the index
-exists. Uses CREATE INDEX CONCURRENTLY for the same reason as migrate_perf_indexes.py
-(no ACCESS EXCLUSIVE lock / no blocked writes during the build).
+On schema-per-tenant deploys, lc_master lives in tenant_* schemas and trigram
+indexes are created by the ORM (see LCMaster.__table_args__). This script only
+runs for legacy single-schema (public) databases.
 """
 
 import os
 import sys
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, HERE)
+os.environ.setdefault("SKIP_PRODUCTION_CHECKS", "true")
 
 from sqlalchemy import text
 from config.database import engine
@@ -36,11 +34,29 @@ INDEXES = [
 ]
 
 
+def _is_multi_tenant(conn) -> bool:
+    row = conn.execute(text("""
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'platform' AND table_name = 'organizations'
+    """)).first()
+    return row is not None
+
+
 def main():
-    # CREATE EXTENSION and CREATE INDEX CONCURRENTLY both need to run outside a
-    # transaction block, so use an autocommit connection (same as migrate_perf_indexes.py).
     conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
     try:
+        if _is_multi_tenant(conn):
+            print("SKIP trgm indexes — multi-tenant platform schema detected.")
+            return
+
+        public_lc = conn.execute(text("""
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'lc_master'
+        """)).first()
+        if not public_lc:
+            print("SKIP trgm indexes — lc_master not in public.")
+            return
+
         print("  pg_trgm extension...")
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         for name, ddl in INDEXES:

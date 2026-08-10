@@ -34,4 +34,12 @@ print(f"Settings OK — environment={settings.ENVIRONMENT} debug={settings.DEBUG
 print(f"CORS origins={settings.cors_origins}")
 PY
 
+echo "Running database migrations (internal DATABASE_URL)..."
+unset MIGRATE_USE_PUBLIC_URL
+export ENVIRONMENT=development
+export DEBUG=false
+export ALLOWED_ORIGINS=http://localhost
+export SKIP_PRODUCTION_CHECKS=true
+python deploy_migrate.py
+
 exec uvicorn main:app --host 0.0.0.0 --port "${PORT:-8000}" --log-level info

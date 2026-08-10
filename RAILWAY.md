@@ -17,7 +17,7 @@ On the **backend web service**, add variables (Railway can reference the Postgre
 | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
 | `DATABASE_PUBLIC_URL` | `${{Postgres.DATABASE_PUBLIC_URL}}` |
 
-`DATABASE_PUBLIC_URL` is required for **pre-deploy migrations** — the private `*.railway.internal` host is not reachable during the migrate step.
+`DATABASE_PUBLIC_URL` is required for **pre-deploy migrations** when using the public proxy. If you omit it, pre-deploy skips migrations and they run automatically at container start (internal URL works at runtime).
 
 ## 3. Required environment variables
 

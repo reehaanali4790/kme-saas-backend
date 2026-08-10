@@ -148,8 +148,8 @@ class LCMaster(Base):
     alerts = relationship("PriceAlert", back_populates="lc", cascade="all, delete-orphan")
     bill_of_ladings = relationship("BillOfLading", back_populates="lc")
     shipments = relationship("Shipment", back_populates="lc")
-    creator = relationship("User", foreign_keys=[created_by], back_populates="lcs_created")
-    assignee = relationship("User", foreign_keys=[assigned_to], back_populates="lcs_assigned")
+    creator = relationship("User", foreign_keys=[created_by])
+    assignee = relationship("User", foreign_keys=[assigned_to])
     contract = relationship("Contract", back_populates="lc", foreign_keys=[contract_id])
     
     __table_args__ = (
@@ -506,7 +506,7 @@ class LMEPrice(Base):
     __tablename__ = "lme_prices"
     
     price_id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    bulletin_id: Mapped[int | None] = mapped_column(Integer, ForeignKey('lme_bulletins.bulletin_id', ondelete='CASCADE'))
+    bulletin_id: Mapped[int | None] = mapped_column(Integer, ForeignKey('shared.lme_bulletins.bulletin_id', ondelete='CASCADE'))
     
     # Price source
     fastmarket_symbol: Mapped[str | None] = mapped_column(String(50))
@@ -616,7 +616,7 @@ class WhatsAppConfig(Base):
     __tablename__ = "whatsapp_config"
     
     config_id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    user_id: Mapped[int | None] = mapped_column(Integer, ForeignKey('users.user_id', ondelete='CASCADE'), index=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, ForeignKey('platform.users.user_id', ondelete='CASCADE'), index=True)
     recipient_name: Mapped[str] = mapped_column(String(100), nullable=False)
     phone_number: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
     country_code: Mapped[str | None] = mapped_column(String(5), default='+92')
@@ -641,7 +641,7 @@ class WhatsAppConfig(Base):
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     
     # Relationships
-    user = relationship("User", back_populates="whatsapp_config")
+    user = relationship("User", foreign_keys=[user_id])
 
 class DemurrageConfig(Base):
     """Global defaults for demurrage calculation. Singleton row (config_id=1).
@@ -667,7 +667,7 @@ class BrandingConfig(Base):
     logo_path: Mapped[str | None] = mapped_column(String(500))
     logo_original_filename: Mapped[str | None] = mapped_column(String(255))
     logo_bg_color: Mapped[str] = mapped_column(String(20), nullable=False, default="#0F172A")
-    updated_by: Mapped[int | None] = mapped_column(Integer, ForeignKey('users.user_id', ondelete='SET NULL'))
+    updated_by: Mapped[int | None] = mapped_column(Integer, ForeignKey('platform.users.user_id', ondelete='SET NULL'))
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
 class AuditLog(Base):
@@ -765,7 +765,7 @@ class LMEBulletinCrawlLog(Base):
     source_url: Mapped[str | None] = mapped_column(Text)
     file_name: Mapped[str | None] = mapped_column(String(255))
     bulletin_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey('lme_bulletins.bulletin_id', ondelete='SET NULL'))
+        Integer, ForeignKey('shared.lme_bulletins.bulletin_id', ondelete='SET NULL'))
     error_message: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (
@@ -1303,7 +1303,7 @@ class GoodsDeclaration(Base):
     bond_penalty_reason: Mapped[str | None] = mapped_column(Text)
     bond_penalty_days: Mapped[int | None] = mapped_column(Integer)         # days late the penalty was assessed for
     bond_penalty_recorded_at: Mapped[datetime | None] = mapped_column(DateTime)
-    bond_penalty_recorded_by: Mapped[int | None] = mapped_column(Integer, ForeignKey('users.user_id', ondelete='SET NULL'))
+    bond_penalty_recorded_by: Mapped[int | None] = mapped_column(Integer, ForeignKey('platform.users.user_id', ondelete='SET NULL'))
 
     # GD View (WeBOC) — filed-stage document.
     # GD filing deadline = ETA + 18 days; into-bond settle deadline = IB filing date + 180 days.
@@ -1312,7 +1312,7 @@ class GoodsDeclaration(Base):
     # Verification columns
     is_verified: Mapped[bool | None] = mapped_column(Boolean, default=False)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    verified_by: Mapped[int | None] = mapped_column(Integer, ForeignKey('users.user_id', ondelete='SET NULL'), nullable=True)
+    verified_by: Mapped[int | None] = mapped_column(Integer, ForeignKey('platform.users.user_id', ondelete='SET NULL'), nullable=True)
     # Into-Bond: the filed IB GD document (step 2 after GD View) — starts the settle clock.
     into_bond_gd_uploaded: Mapped[bool | None] = mapped_column(Boolean, default=False)
     item_details_uploaded: Mapped[bool | None] = mapped_column(Boolean, default=False)
@@ -1390,8 +1390,10 @@ class GDAttachment(Base):
     # Set only for Partial-GD-scoped documents (EX_BOND_GD_VIEW / EX_BOND_ITEM_DETAILS) —
     # scopes the attachment to one ex_bond_entries row instead of the whole GD. NULL for
     # every other kind (unaffected / backward compatible).
-    ex_bond_entry_id: Mapped[int | None] = mapped_column(Integer, ForeignKey('ex_bond_entries.entry_id', ondelete='CASCADE'),
-                         nullable=True, index=True)
+    ex_bond_entry_id: Mapped[int | None] = mapped_column(Integer, ForeignKey(
+        'ex_bond_entries.entry_id', ondelete='CASCADE', use_alter=True,
+        name='fk_gd_attachments_ex_bond_entry_id',
+    ), nullable=True, index=True)
     kind: Mapped[str] = mapped_column(String(20), nullable=False)        # EXAMINATION / LAB / ASSESSMENT / GD_VIEW / ITEM_DETAILS / FINAL_GD / INTO_BOND_GD / EX_BOND_GD / EX_BOND_GD_VIEW / EX_BOND_ITEM_DETAILS
     filename: Mapped[str | None] = mapped_column(String(255))
     file_path: Mapped[str | None] = mapped_column(Text)
@@ -1594,7 +1596,7 @@ class GdKgtlWeighment(Base):
     kgtl_coils: Mapped[int | None] = mapped_column(Integer)
     remarks: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime | None] = mapped_column(DateTime, server_default=func.now())
-    created_by: Mapped[int | None] = mapped_column(Integer, ForeignKey('users.user_id', ondelete='SET NULL'))
+    created_by: Mapped[int | None] = mapped_column(Integer, ForeignKey('platform.users.user_id', ondelete='SET NULL'))
 
     gd = relationship("GoodsDeclaration", back_populates="kgtl_weighments")
 
@@ -1857,7 +1859,7 @@ class ReportTemplate(Base):
     __tablename__ = "report_templates"
 
     template_id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id', ondelete='CASCADE'), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey('platform.users.user_id', ondelete='CASCADE'), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     grain: Mapped[str] = mapped_column(String(20), nullable=False)             # master | shipment | bl | gd | lc

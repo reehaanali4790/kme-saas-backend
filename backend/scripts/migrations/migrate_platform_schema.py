@@ -2,8 +2,9 @@
 
 import os
 import sys
+import traceback
 
-HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, HERE)
 os.environ.setdefault("SKIP_PRODUCTION_CHECKS", "true")
 
@@ -31,6 +32,9 @@ def main():
         print(f"Platform schema: {PLATFORM_SCHEMA}")
         print(f"Shared schema: {SHARED_SCHEMA}")
         print(f"Default tenant: {org.slug} -> {org.schema_name}")
+    except Exception:
+        traceback.print_exc()
+        sys.exit(1)
     finally:
         db.close()
 

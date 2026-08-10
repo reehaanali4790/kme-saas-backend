@@ -26,14 +26,16 @@ def resolve_database_url() -> str:
     public = os.environ.get("DATABASE_PUBLIC_URL")
     url = internal or public or settings.DATABASE_URL
 
-    if internal and ".railway.internal" in internal:
-        if public:
-            url = public
-        else:
-            logging.getLogger("uvicorn").warning(
-                "DATABASE_URL uses postgres.railway.internal but DATABASE_PUBLIC_URL "
-                "is not set — pre-deploy migrations may fail."
-            )
+    # Pre-deploy on Railway cannot reach *.railway.internal — predeploy_railway.sh
+    # sets MIGRATE_USE_PUBLIC_URL=true and swaps DATABASE_URL to the public proxy.
+    use_public = os.environ.get("MIGRATE_USE_PUBLIC_URL", "").lower() in ("1", "true", "yes")
+    if use_public and public:
+        url = public
+    elif use_public and internal and ".railway.internal" in internal:
+        logging.getLogger("uvicorn").warning(
+            "MIGRATE_USE_PUBLIC_URL is set but DATABASE_PUBLIC_URL is missing — "
+            "pre-deploy migrations may fail. Add DATABASE_PUBLIC_URL=${{Postgres.DATABASE_PUBLIC_URL}}."
+        )
 
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)

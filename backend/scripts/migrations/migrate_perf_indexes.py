@@ -1,16 +1,15 @@
-"""Add indexes for columns that are actively range-filtered/sorted in the dashboard,
-reports, and alert-engine query paths but were missing an index (found during the
-data-access performance audit).
+"""Add indexes for columns actively range-filtered in dashboard/reports.
 
-Uses CREATE INDEX CONCURRENTLY so this can run against the live database without taking
-an ACCESS EXCLUSIVE lock that would block writes — CONCURRENTLY cannot run inside a
-transaction block, so this connects with autocommit instead of the usual engine.begin().
+Skips on schema-per-tenant deploys — tenant tables live in tenant_* schemas and
+ORM indexes are created during tenant provisioning.
 """
 
 import os
 import sys
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, HERE)
+os.environ.setdefault("SKIP_PRODUCTION_CHECKS", "true")
 
 from sqlalchemy import text
 from config.database import engine
@@ -30,10 +29,20 @@ INDEXES = [
 ]
 
 
+def _is_multi_tenant(conn) -> bool:
+    row = conn.execute(text("""
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'platform' AND table_name = 'organizations'
+    """)).first()
+    return row is not None
+
+
 def main():
-    # autocommit: CONCURRENTLY is illegal inside a transaction block
     conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
     try:
+        if _is_multi_tenant(conn):
+            print("SKIP perf indexes — multi-tenant platform schema detected.")
+            return
         for name, ddl in INDEXES:
             print(f"  {name}...")
             conn.execute(text(ddl))

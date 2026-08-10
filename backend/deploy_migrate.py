@@ -16,6 +16,14 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# Fresh SaaS deploys bootstrap the full ORM schema in platform/shared/tenant_* via these
+# two scripts. Legacy migrations below target the old single-schema public layout and are
+# only needed when upgrading an existing single-tenant database.
+SAAS_BOOTSTRAP_MIGRATIONS = frozenset({
+    "migrate_platform_schema.py",
+    "migrate_single_tenant_to_schema.py",
+})
+
 # Order matters: bill_of_ladings must exist before shipment_tables links it; shipments
 # must exist before demurrage/import-improvements add to/reference it.
 MIGRATIONS = [
@@ -72,6 +80,22 @@ MIGRATIONS = [
 ]
 
 
+def _fresh_saas_tenant_schema() -> bool:
+    """True when tenant tables were created by ORM bootstrap (not legacy public upgrade)."""
+    try:
+        from sqlalchemy import text
+        from config.database import engine
+        with engine.connect() as conn:
+            row = conn.execute(text(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema = 'tenant_default' AND table_name = 'lc_master'"
+            )).first()
+            return row is not None
+    except Exception as exc:
+        print(f"  WARN: could not detect tenant schema ({exc})")
+        return False
+
+
 def main():
     print("=" * 60)
     print("Running deploy migrations (additive / idempotent)")
@@ -83,16 +107,24 @@ def main():
     env.setdefault("ENVIRONMENT", "development")
     env.setdefault("DEBUG", "false")
     env.setdefault("ALLOWED_ORIGINS", "http://localhost")
+    skip_legacy_public = False
     for script in MIGRATIONS:
         path = os.path.join(HERE, "scripts", "migrations", script)
         if not os.path.exists(path):
             print(f"  SKIP (not found): {script}")
+            continue
+        if skip_legacy_public and script not in SAAS_BOOTSTRAP_MIGRATIONS:
+            print(f"\n--- {script} ---")
+            print("  SKIP — multi-tenant SaaS schema already bootstrapped (ORM models).")
             continue
         print(f"\n--- {script} ---")
         result = subprocess.run([sys.executable, path], cwd=HERE, env=env)
         if result.returncode != 0:
             print(f"\nMIGRATION FAILED: {script} (exit {result.returncode}). Aborting release.")
             sys.exit(result.returncode)
+        if script in SAAS_BOOTSTRAP_MIGRATIONS and _fresh_saas_tenant_schema():
+            skip_legacy_public = True
+            print("  Fresh SaaS tenant schema detected — skipping legacy public-schema migrations.")
     print("\n" + "=" * 60)
     print("All migrations applied successfully.")
     print("=" * 60)

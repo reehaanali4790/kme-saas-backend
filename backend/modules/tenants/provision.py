@@ -72,25 +72,27 @@ def seed_platform_plans(db: Session) -> None:
 
 def create_platform_and_shared_tables(db: Session) -> None:
     ensure_platform_and_shared_schemas(db)
-    platform_tables = [t for t in Base.metadata.sorted_tables if t.schema == PLATFORM_SCHEMA]
-    shared_tables = [t for t in Base.metadata.sorted_tables if t.schema == SHARED_SCHEMA]
-    conn = db.connection()
-    for table in platform_tables + shared_tables:
-        table.create(bind=conn, checkfirst=True)
+    platform_tables = [t for t in Base.metadata.tables.values() if t.schema == PLATFORM_SCHEMA]
+    shared_tables = [t for t in Base.metadata.tables.values() if t.schema == SHARED_SCHEMA]
+    Base.metadata.create_all(
+        bind=db.connection(),
+        tables=platform_tables + shared_tables,
+        checkfirst=True,
+    )
     db.commit()
 
 
 def create_tenant_tables(db: Session, schema_name: str) -> None:
     db.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema_name}"))
+    db.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
     db.commit()
     set_tenant_search_path(db, schema_name)
 
     tenant_tables = [
-        t for t in Base.metadata.sorted_tables
+        t for t in Base.metadata.tables.values()
         if t.schema is None or t.schema not in (PLATFORM_SCHEMA, SHARED_SCHEMA)
     ]
-    for table in tenant_tables:
-        table.create(bind=db.connection(), checkfirst=True)
+    Base.metadata.create_all(bind=db.connection(), tables=tenant_tables, checkfirst=True)
     db.commit()
 
 

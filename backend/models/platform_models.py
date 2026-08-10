@@ -109,8 +109,16 @@ class User(Base):
         Integer, ForeignKey(f"{PLATFORM_SCHEMA}.users.user_id")
     )
 
-    memberships = relationship("OrganizationMembership", back_populates="user")
-    sessions = relationship("UserSession", back_populates="user")
+    memberships = relationship(
+        "OrganizationMembership",
+        back_populates="user",
+        foreign_keys="OrganizationMembership.user_id",
+    )
+    sessions = relationship(
+        "UserSession",
+        back_populates="user",
+        foreign_keys="UserSession.user_id",
+    )
 
     # Legacy compat: role resolved at runtime from membership + tenant Role table
     role = None
@@ -166,7 +174,7 @@ class UserSession(Base):
     logout_time: Mapped[datetime | None] = mapped_column(DateTime)
     active: Mapped[bool | None] = mapped_column(Boolean, default=True, index=True)
 
-    user = relationship("User", back_populates="sessions")
+    user = relationship("User", back_populates="sessions", foreign_keys=[user_id])
 
 
 class Subscription(Base):
