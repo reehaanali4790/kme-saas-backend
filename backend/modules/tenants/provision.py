@@ -74,11 +74,9 @@ def create_platform_and_shared_tables(db: Session) -> None:
     ensure_platform_and_shared_schemas(db)
     platform_tables = [t for t in Base.metadata.tables.values() if t.schema == PLATFORM_SCHEMA]
     shared_tables = [t for t in Base.metadata.tables.values() if t.schema == SHARED_SCHEMA]
-    Base.metadata.create_all(
-        bind=db.connection(),
-        tables=platform_tables + shared_tables,
-        checkfirst=True,
-    )
+    conn = db.connection()
+    Base.metadata.create_all(bind=conn, tables=platform_tables, checkfirst=True)
+    Base.metadata.create_all(bind=conn, tables=shared_tables, checkfirst=True)
     db.commit()
 
 

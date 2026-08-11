@@ -718,7 +718,7 @@ class LMEPriceHistory(Base):
     lme_high: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     lme_low: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     calculated_lme: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
-    formula_number: Mapped[int | None] = mapped_column(Integer, ForeignKey('calculation_formulas.formula_id'))
+    formula_number: Mapped[int | None] = mapped_column(Integer)  # legacy formula_id ref; tenant-scoped formulas
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     created_by: Mapped[int | None] = mapped_column(Integer, ForeignKey('platform.users.user_id'))
     notes: Mapped[str | None] = mapped_column(Text)
