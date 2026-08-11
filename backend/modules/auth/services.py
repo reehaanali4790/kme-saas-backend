@@ -188,6 +188,7 @@ class AuthService:
             "full_name": user.full_name,
             "role": membership.role_name,
             "permissions": permissions,
+            "is_platform_admin": bool(user.is_platform_admin),
             "organization": {
                 "org_id": org.organization_id,
                 "slug": org.slug,

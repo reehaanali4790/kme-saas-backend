@@ -202,6 +202,7 @@ def login(
                 "username": user.username,
                 "email": user.email,
                 "full_name": user.full_name,
+                "is_platform_admin": bool(user.is_platform_admin),
             },
         }
 
@@ -388,7 +389,15 @@ def refresh_token(
     if not user or not user.active:
         raise HTTPException(status_code=401, detail="User not found or inactive")
 
-    membership = AuthService.get_default_membership(db, user.user_id)
+    current_payload = decode_access_token_from_request(request)
+    membership = None
+    if current_payload and current_payload.get("org_id"):
+        membership = db.query(OrganizationMembership).filter(
+            OrganizationMembership.user_id == user.user_id,
+            OrganizationMembership.organization_id == int(current_payload["org_id"]),
+        ).first()
+    if not membership:
+        membership = AuthService.get_default_membership(db, user.user_id)
     if not membership:
         raise HTTPException(status_code=403, detail="No organization membership")
 
