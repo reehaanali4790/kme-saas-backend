@@ -306,7 +306,10 @@ async def startup_event():
             org = provision_default_tenant_if_missing(boot_db)
             if org:
                 logger.info("Default tenant ready: %s (%s)", org.slug, org.schema_name)
-            from modules.platform.bootstrap import sync_platform_admin_emails
+            from modules.platform.bootstrap import ensure_platform_owner_user, sync_platform_admin_emails
+            owner = ensure_platform_owner_user(boot_db, org)
+            if owner:
+                logger.info("Platform owner account ready: %s", owner.username)
             promoted = sync_platform_admin_emails(boot_db)
             if promoted:
                 logger.info("Promoted %d platform admin(s) from PLATFORM_ADMIN_EMAILS", promoted)

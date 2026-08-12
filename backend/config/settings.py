@@ -219,6 +219,9 @@ class Settings(BaseSettings):
     STRIPE_PRICE_TD_MONTHLY: Optional[str] = None
     STRIPE_PRICE_TD_ANNUAL: Optional[str] = None
     PLATFORM_ADMIN_EMAILS: str = ""
+    PLATFORM_ADMIN_USERNAME: str = "platform-owner"
+    PLATFORM_ADMIN_PASSWORD: Optional[str] = None
+    PLATFORM_ADMIN_FULL_NAME: str = "Platform Owner"
     SIGNUP_RATE_LIMIT: str = "5/minute"
     DEFAULT_TRIAL_DAYS: int = 14
     

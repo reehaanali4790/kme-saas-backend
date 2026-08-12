@@ -74,27 +74,31 @@ After deploy, in Stripe Dashboard → **Developers → Webhooks**:
 
 Migrations are **additive and idempotent** — safe on every deploy. Fresh databases get `platform`, `shared`, and default tenant `tenant_default` schemas automatically.
 
-## 7. First login
+## 7. First login — platform owner (SaaS super-admin)
 
-After first deploy, create an admin user via Railway **Shell** on the web service:
+On the **backend** service, set these variables (use your real email):
+
+```env
+PLATFORM_ADMIN_EMAILS=you@yourcompany.com
+PLATFORM_ADMIN_USERNAME=platform-owner
+PLATFORM_ADMIN_PASSWORD=<strong random password>
+PLATFORM_ADMIN_FULL_NAME=Your Name
+```
+
+On startup the backend creates this user (once), adds them to the default org as ADMIN, and sets `is_platform_admin=true`.
+
+**Sign in:** frontend `/login` with `PLATFORM_ADMIN_USERNAME` + `PLATFORM_ADMIN_PASSWORD`.
+
+**Owner console:** user menu → **Platform console**, or `/platform/organizations`.
+
+To run manually (Railway shell):
 
 ```bash
 cd backend
-python -c "
-from config.database import SessionLocal
-from modules.auth.services import AuthService
-from models.platform_models import Organization, OrganizationMembership, User
-db = SessionLocal()
-auth = AuthService(db)
-org = db.query(Organization).filter(Organization.slug == 'default').first()
-user = auth.create_user(email='admin@example.com', password='ChangeMeNow!', full_name='Admin')
-db.add(OrganizationMembership(organization_id=org.organization_id, user_id=user.user_id, role='admin'))
-db.commit()
-print('Created admin@example.com')
-"
+PLATFORM_ADMIN_EMAILS=you@yourcompany.com PLATFORM_ADMIN_PASSWORD='...' python scripts/create_platform_owner.py
 ```
 
-Change the password immediately after first login.
+Change the password after first login.
 
 ## 8. Connect the frontend
 
