@@ -11,6 +11,7 @@ from models.database_models import Shipment
 from modules.shipments import services as ship_svc
 from modules.weboc.gd_service import _has_attachment, get_gd_or_404, stages_for
 from modules.workflow.constants import (
+    ACTION_CREATE_SHIPMENT,
     ACTION_GD_ADVANCE,
     ACTION_GD_SET_STATUS,
     ACTION_SET_DELIVERY,
@@ -24,6 +25,7 @@ from modules.workflow.constants import (
     ACTION_UPLOAD_INTO_BOND_GD,
     ACTION_UPLOAD_INVOICE,
     ACTION_UPLOAD_ITEM_DETAILS,
+    ACTION_UPLOAD_LC,
     ACTION_UPLOAD_PACKING,
     MANAGER_ROLES,
 )
@@ -42,16 +44,32 @@ def shipment_load_options():
 
 
 class WorkflowBlocked(HTTPException):
-    def __init__(self, *, blocker: str, required_step: str, deadline: Optional[str] = None):
-        super().__init__(
-            status_code=409,
-            detail={
+    def __init__(
+        self,
+        *,
+        blocker: str,
+        required_step: str,
+        deadline: Optional[str] = None,
+        shipment_id: Optional[int] = None,
+        lc_id: Optional[int] = None,
+        contract_id: Optional[int] = None,
+        doc_type: Optional[str] = None,
+    ):
+        from modules.workflow.pipeline_service import enrich_blocked_detail
+
+        detail = enrich_blocked_detail(
+            {
                 "code": "workflow_blocked",
                 "blocker": blocker,
                 "required_step": required_step,
                 "deadline": deadline,
             },
+            shipment_id=shipment_id,
+            lc_id=lc_id,
+            contract_id=contract_id,
+            doc_type=doc_type,
         )
+        super().__init__(status_code=409, detail=detail)
 
 
 def _core_docs_done(s: Shipment) -> bool:
@@ -127,14 +145,32 @@ def assert_step_allowed(
 
     if action == ACTION_UPLOAD_INVOICE:
         if not has_bl:
-            raise WorkflowBlocked(blocker="Upload Bill of Lading first", required_step="docs_core")
+            raise WorkflowBlocked(
+                blocker="Upload Bill of Lading first",
+                required_step="docs_core",
+                shipment_id=shipment_id,
+                lc_id=s.lc_id,
+                doc_type="bl",
+            )
         return
 
     if action == ACTION_UPLOAD_PACKING:
         if not has_bl:
-            raise WorkflowBlocked(blocker="Upload Bill of Lading first", required_step="docs_core")
+            raise WorkflowBlocked(
+                blocker="Upload Bill of Lading first",
+                required_step="docs_core",
+                shipment_id=shipment_id,
+                lc_id=s.lc_id,
+                doc_type="bl",
+            )
         if not has_inv:
-            raise WorkflowBlocked(blocker="Upload Commercial Invoice first", required_step="docs_core")
+            raise WorkflowBlocked(
+                blocker="Upload Commercial Invoice first",
+                required_step="docs_core",
+                shipment_id=shipment_id,
+                lc_id=s.lc_id,
+                doc_type="invoice",
+            )
         return
 
     if action in (ACTION_UPLOAD_FI, ACTION_UPLOAD_INSURANCE):
@@ -142,6 +178,9 @@ def assert_step_allowed(
             raise WorkflowBlocked(
                 blocker="Complete core documents (BL, Invoice, Packing) first",
                 required_step="docs_core",
+                shipment_id=shipment_id,
+                lc_id=s.lc_id,
+                doc_type="bl",
             )
         return
 
@@ -157,25 +196,54 @@ def assert_step_allowed(
             raise WorkflowBlocked(
                 blocker="Complete core documents (BL, Invoice, Packing) first",
                 required_step="docs_core",
+                shipment_id=shipment_id,
+                lc_id=s.lc_id,
+                doc_type="bl",
             )
         if val_blocked:
             raise WorkflowBlocked(
                 blocker=val_msg or "Resolve validation failures first",
                 required_step="docs_validated",
+                shipment_id=shipment_id,
+                lc_id=s.lc_id,
             )
         gd = ship_svc.ordered_docs(s.goods_declarations)[0] if s.goods_declarations else None
         if action == ACTION_UPLOAD_ITEM_DETAILS and gd:
             if not (_has_attachment(gd.gd_id, "GD_VIEW", db) or gd.gd_view_uploaded or gd.gd_number):
-                raise WorkflowBlocked(blocker="Upload GD View first", required_step="gd_started")
+                raise WorkflowBlocked(
+                    blocker="Upload GD View first",
+                    required_step="gd_started",
+                    shipment_id=shipment_id,
+                    lc_id=s.lc_id,
+                    doc_type="gdview",
+                )
         if action == ACTION_UPLOAD_FINAL_GD and gd:
             if not _has_attachment(gd.gd_id, "ITEM_DETAILS", db):
-                raise WorkflowBlocked(blocker="Upload Item Details first", required_step="gd_hc")
+                raise WorkflowBlocked(
+                    blocker="Upload Item Details first",
+                    required_step="gd_hc",
+                    shipment_id=shipment_id,
+                    lc_id=s.lc_id,
+                    doc_type="itemdetails",
+                )
         if action == ACTION_UPLOAD_INTO_BOND_GD and gd:
             if not (_has_attachment(gd.gd_id, "GD_VIEW", db) or gd.gd_view_uploaded):
-                raise WorkflowBlocked(blocker="Upload GD View first", required_step="gd_started")
+                raise WorkflowBlocked(
+                    blocker="Upload GD View first",
+                    required_step="gd_started",
+                    shipment_id=shipment_id,
+                    lc_id=s.lc_id,
+                    doc_type="gdview",
+                )
         if action == ACTION_UPLOAD_EX_BOND_GD and gd:
             if not (_has_attachment(gd.gd_id, "INTO_BOND_GD", db) or getattr(gd, "into_bond_gd_uploaded", False)):
-                raise WorkflowBlocked(blocker="Upload Into-Bond GD first", required_step="gd_ib")
+                raise WorkflowBlocked(
+                    blocker="Upload Into-Bond GD first",
+                    required_step="gd_ib",
+                    shipment_id=shipment_id,
+                    lc_id=s.lc_id,
+                    doc_type="intobondgd",
+                )
         return
 
     if action == ACTION_SET_DELIVERY:
@@ -186,6 +254,8 @@ def assert_step_allowed(
                 raise WorkflowBlocked(
                     blocker="Customs clearance must be complete before marking delivered",
                     required_step="gd_hc" if (gd.gd_type or "") == "HOME_CONSUMPTION" else "gd_ib",
+                    shipment_id=shipment_id,
+                    lc_id=s.lc_id,
                 )
         return
 
@@ -195,11 +265,16 @@ def assert_step_allowed(
             raise WorkflowBlocked(
                 blocker="Complete core documents before advancing customs",
                 required_step="docs_core",
+                shipment_id=shipment_id,
+                lc_id=s.lc_id,
+                doc_type="bl",
             )
         if val_blocked:
             raise WorkflowBlocked(
                 blocker=val_msg or "Resolve validation failures first",
                 required_step="docs_validated",
+                shipment_id=shipment_id,
+                lc_id=s.lc_id,
             )
         if action == ACTION_GD_ADVANCE:
             return
@@ -214,6 +289,8 @@ def assert_step_allowed(
                         raise WorkflowBlocked(
                             blocker=f"Cannot skip from {cur} to {target_status} — advance one stage at a time",
                             required_step="gd_advance",
+                            shipment_id=shipment_id,
+                            lc_id=s.lc_id,
                         )
                 except ValueError:
                     pass
@@ -221,6 +298,78 @@ def assert_step_allowed(
 
     # Unknown actions pass through
     return
+
+
+def assert_lc_upload_allowed(
+    db: Session,
+    *,
+    contract_id: Optional[int] = None,
+) -> None:
+    """Contract must exist and be linked before LC upload/create."""
+    from models.database_models import Contract, LCMaster
+
+    if not contract_id:
+        raise WorkflowBlocked(
+            blocker="Link this LC to a supplier contract first",
+            required_step="contract_pick",
+        )
+    contract = db.query(Contract).filter(Contract.contract_id == contract_id).first()
+    if not contract:
+        raise WorkflowBlocked(
+            blocker="Contract not found — select a valid contract",
+            required_step="contract_pick",
+        )
+    existing = db.query(LCMaster).filter(LCMaster.contract_id == contract_id).first()
+    if existing:
+        raise WorkflowBlocked(
+            blocker=f"LC already opened for this contract ({existing.lc_number or existing.lc_id})",
+            required_step="lc_exists",
+            lc_id=existing.lc_id,
+            contract_id=contract_id,
+        )
+
+
+def assert_shipment_create_allowed(db: Session, *, lc_id: int) -> None:
+    """LC must exist before creating a shipment."""
+    from models.database_models import LCMaster
+
+    lc = db.query(LCMaster).filter(LCMaster.lc_id == lc_id).first()
+    if not lc:
+        raise WorkflowBlocked(
+            blocker="LC not found — create or import an LC first",
+            required_step="lc",
+            lc_id=lc_id,
+        )
+
+
+def assert_lc_upload_allowed_for_user(
+    db: Session,
+    *,
+    contract_id: Optional[int],
+    user_id: int,
+    role_name: Optional[str],
+    override_reason: Optional[str] = None,
+) -> None:
+    if override_reason:
+        if role_name not in MANAGER_ROLES:
+            raise HTTPException(status_code=403, detail="Only ADMIN or MANAGER can override workflow gates")
+        return
+    assert_lc_upload_allowed(db, contract_id=contract_id)
+
+
+def assert_shipment_create_allowed_for_user(
+    db: Session,
+    *,
+    lc_id: int,
+    user_id: int,
+    role_name: Optional[str],
+    override_reason: Optional[str] = None,
+) -> None:
+    if override_reason:
+        if role_name not in MANAGER_ROLES:
+            raise HTTPException(status_code=403, detail="Only ADMIN or MANAGER can override workflow gates")
+        return
+    assert_shipment_create_allowed(db, lc_id=lc_id)
 
 
 def assert_step_allowed_for_user(

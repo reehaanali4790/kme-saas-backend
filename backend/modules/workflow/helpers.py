@@ -36,3 +36,41 @@ def check_gate(
         gd_id=gd_id,
         target_status=target_status,
     )
+
+
+def check_lc_upload(
+    db: Session,
+    request: Request,
+    *,
+    contract_id: Optional[int],
+    user_id: int,
+    override_reason: Optional[str] = None,
+) -> None:
+    from modules.workflow import gates as gate_svc
+
+    gate_svc.assert_lc_upload_allowed_for_user(
+        db,
+        contract_id=contract_id,
+        user_id=user_id,
+        role_name=role_from_request(request),
+        override_reason=override_reason,
+    )
+
+
+def check_shipment_create(
+    db: Session,
+    request: Request,
+    *,
+    lc_id: int,
+    user_id: int,
+    override_reason: Optional[str] = None,
+) -> None:
+    from modules.workflow import gates as gate_svc
+
+    gate_svc.assert_shipment_create_allowed_for_user(
+        db,
+        lc_id=lc_id,
+        user_id=user_id,
+        role_name=role_from_request(request),
+        override_reason=override_reason,
+    )

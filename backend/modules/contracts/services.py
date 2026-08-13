@@ -200,8 +200,86 @@ def list_contracts(db: Session, status: Optional[str]) -> List[Contract]:
     return q.order_by(Contract.contract_id.desc()).all()
 
 
+def lookup_contracts(db: Session, q: str, limit: int = 10) -> list[dict]:
+    """Search contracts for LC intake / duplicate detection."""
+    from modules.workflow.redirects import create_lc_href, lc_detail_href
+
+    term = f"%{(q or '').strip()}%"
+    if not term or term == "%%":
+        return []
+    rows = (
+        db.query(Contract)
+        .options(joinedload(Contract.lc))
+        .filter(
+            Contract.status != "CANCELLED",
+            (Contract.contract_number.ilike(term))
+            | (Contract.supplier_name.ilike(term))
+            | (Contract.buyer_name.ilike(term)),
+        )
+        .order_by(Contract.contract_id.desc())
+        .limit(limit)
+        .all()
+    )
+    results = []
+    for c in rows:
+        lc = c.lc
+        if lc:
+            redirect_href = lc_detail_href(lc.lc_id)
+            redirect_label = "View existing LC"
+        else:
+            redirect_href = create_lc_href(c.contract_id)
+            redirect_label = "Open LC for this contract"
+        results.append({
+            "contract_id": c.contract_id,
+            "contract_number": c.contract_number,
+            "supplier_name": c.supplier_name,
+            "buyer_name": c.buyer_name,
+            "contract_date": c.contract_date.isoformat() if c.contract_date else None,
+            "status": c.status,
+            "lc_id": lc.lc_id if lc else None,
+            "lc_number": lc.lc_number if lc else None,
+            "has_lc": lc is not None,
+            "redirect_href": redirect_href,
+            "redirect_label": redirect_label,
+        })
+    return results
+
+
+def find_duplicate_contract(db: Session, contract_number: Optional[str], supplier_name: Optional[str]) -> Optional[Contract]:
+    num = (contract_number or "").strip()
+    if not num:
+        return None
+    q = db.query(Contract).options(joinedload(Contract.lc)).filter(
+        Contract.status != "CANCELLED",
+        Contract.contract_number.ilike(num),
+    )
+    sup = (supplier_name or "").strip()
+    if sup:
+        q = q.filter(Contract.supplier_name.ilike(f"%{sup}%"))
+    return q.order_by(Contract.contract_id.desc()).first()
+
+
 def save_contract(db: Session, data: ContractSave, created_by: int) -> Contract:
     is_new = not data.contract_id
+    if is_new:
+        dup = find_duplicate_contract(db, data.contract_number, data.supplier_name)
+        if dup:
+            from fastapi import HTTPException
+            from modules.workflow.pipeline_service import enrich_blocked_detail
+
+            lc = dup.lc
+            detail = enrich_blocked_detail(
+                {
+                    "code": "workflow_blocked",
+                    "blocker": f"Contract {dup.contract_number} already exists"
+                               + (f" (LC {lc.lc_number} opened)" if lc else " (awaiting LC)"),
+                    "required_step": "lc_exists" if lc else "lc",
+                    "existing_contract_id": dup.contract_id,
+                },
+                contract_id=dup.contract_id,
+                lc_id=lc.lc_id if lc else None,
+            )
+            raise HTTPException(status_code=409, detail=detail)
     if data.contract_id:
         c = db.query(Contract).filter(Contract.contract_id == data.contract_id).first()
         if not c:

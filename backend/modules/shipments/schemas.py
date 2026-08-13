@@ -33,6 +33,7 @@ class ShipmentCreate(BaseModel):
     category: Optional[str] = None
     lot_number: Optional[str] = None
     shipment_ref: Optional[str] = None
+    override_reason: Optional[str] = None
 
     @field_validator("category", "lot_number", "shipment_ref", mode="before")
     @classmethod

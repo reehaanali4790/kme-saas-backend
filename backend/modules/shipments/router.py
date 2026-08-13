@@ -20,7 +20,7 @@ from modules.lc_creation.helpers.shipment_validator import validate_shipment
 from modules.shipments import services as svc
 from modules.shipments import journey_service as journey_svc
 from modules.shipments.schemas import ShipmentCreate, ShipmentCreateResult, ShipmentUpdate
-from modules.workflow.helpers import check_gate
+from modules.workflow.helpers import check_gate, check_shipment_create
 from modules.workflow.constants import ACTION_SET_DELIVERY
 
 logger = logging.getLogger("uvicorn")
@@ -36,8 +36,10 @@ _can_write = require_min_role("ADMIN", "MANAGER", "OPERATOR")
 # ---------------------------------------------------------------------------
 
 @router.post("/", response_model=ShipmentCreateResult)
-def create_shipment(data: ShipmentCreate, db: Session = Depends(get_tenant_db),
+def create_shipment(data: ShipmentCreate, request: Request, db: Session = Depends(get_tenant_db),
                     current_user: User = Depends(_can_write)):
+    check_shipment_create(db, request, lc_id=data.lc_id, user_id=current_user.user_id,
+                          override_reason=data.override_reason)
     shipment, balance = svc.create_shipment(data, db, created_by=current_user.user_id)
     logger.info(f"Shipment created: id={shipment.shipment_id}, lc_id={data.lc_id}, "
                 f"category={shipment.category}")

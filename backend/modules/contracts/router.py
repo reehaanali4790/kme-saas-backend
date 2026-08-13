@@ -136,6 +136,13 @@ def bank_performance(
     return svc.bank_issuance_performance(db, date_from, date_to, limit)
 
 
+@router.get("/lookup")
+def lookup_contracts(q: str = Query(..., min_length=1), limit: int = Query(10, ge=1, le=50),
+                     db: Session = Depends(get_tenant_db),
+                     current_user: User = Depends(get_current_user)):
+    return {"query": q, "items": svc.lookup_contracts(db, q, limit)}
+
+
 @router.get("/{contract_id}", response_model=ContractOut)
 def get_contract(contract_id: int, db: Session = Depends(get_tenant_db),
                  current_user: User = Depends(get_current_user)):

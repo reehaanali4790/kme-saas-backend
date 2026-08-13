@@ -8,7 +8,7 @@ import logging
 from typing import Optional
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Request
 from infrastructure.documents.document_files import document_file_response
 from sqlalchemy.orm import Session
 
@@ -23,6 +23,7 @@ from infrastructure.document_ai.document_ai import ExtractionError
 from core.platform_metering import enforce_document_quota, meter_document_accepted
 from . import services as svc
 from .schemas import LCCreate, LCCreateResult
+from modules.workflow.helpers import check_lc_upload
 
 logger = logging.getLogger("uvicorn")
 
@@ -43,11 +44,15 @@ def _safe_remove(p):
 
 @router.post("/upload-and-extract")
 def upload_and_extract(
+    request: Request,
     contract_id: Optional[int] = Query(None),
+    override_reason: Optional[str] = Query(None),
     file: UploadFile = File(...),
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(require_permission("import_lc")),
 ):
+    check_lc_upload(db, request, contract_id=contract_id, user_id=current_user.user_id,
+                    override_reason=override_reason)
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
     ext = Path(file.filename).suffix.lower()
@@ -99,8 +104,10 @@ def upload_and_extract(
 
 
 @router.post("/", response_model=LCCreateResult)
-def create_lc(data: LCCreate, db: Session = Depends(get_tenant_db),
+def create_lc(data: LCCreate, request: Request, db: Session = Depends(get_tenant_db),
               current_user: User = Depends(require_permission("import_lc"))):
+    check_lc_upload(db, request, contract_id=data.contract_id, user_id=current_user.user_id,
+                    override_reason=data.override_reason)
     lc, warnings, shipment_id = svc.create_lc(db, data, created_by=current_user.user_id)
     return LCCreateResult(lc_id=lc.lc_id, lc_number=lc.lc_number, warnings=warnings,
                           shipment_id=shipment_id)

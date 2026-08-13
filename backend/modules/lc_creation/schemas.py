@@ -42,6 +42,7 @@ class LCCreate(BaseModel):
     staged_file: Optional[str] = None
     original_filename: Optional[str] = None
     auto_create_shipment: bool = True
+    override_reason: Optional[str] = None
 
     @field_validator("lc_number", mode="before")
     @classmethod
