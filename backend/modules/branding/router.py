@@ -12,7 +12,7 @@ import os
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from core.tenant import get_tenant_db
+from core.tenant import get_tenant_db, get_default_tenant_db
 from config.settings import settings
 from core.permissions import require_permission
 from infrastructure.documents.document_files import document_file_response
@@ -41,8 +41,8 @@ def _safe_remove(path) -> None:
 
 
 @router.get("", response_model=BrandingConfigOut)
-def get_branding(db: Session = Depends(get_tenant_db)):
-    """Public — current app name / logo / background color."""
+def get_branding(db: Session = Depends(get_default_tenant_db)):
+    """Public — current app name / logo / background color (no org session required)."""
     return svc.to_out(svc.get_or_create_config(db))
 
 
@@ -113,7 +113,7 @@ def reset_logo(
 
 
 @router.get("/logo")
-def get_logo(db: Session = Depends(get_tenant_db)):
+def get_logo(db: Session = Depends(get_default_tenant_db)):
     """Public — serves the raw logo image bytes for <img src>."""
     cfg = svc.get_or_create_config(db)
     if not cfg.logo_path:

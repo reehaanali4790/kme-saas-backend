@@ -81,6 +81,77 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str)
     return csrf_token
 
 
+def _membership_org(db: Session, membership: OrganizationMembership) -> Optional[Organization]:
+    return db.query(Organization).filter(
+        Organization.organization_id == membership.organization_id
+    ).first()
+
+
+def _pick_login_membership(
+    db: Session,
+    user: User,
+    accessible_memberships: list[OrganizationMembership],
+) -> Optional[OrganizationMembership]:
+    """Choose org automatically when the user should not see a workspace picker."""
+    if not accessible_memberships:
+        return None
+
+    # Platform owners always land in Admin Suite — use default membership for the token.
+    if user.is_platform_admin:
+        return AuthService.get_default_membership(db, user.user_id) or accessible_memberships[0]
+
+    if len(accessible_memberships) == 1:
+        return accessible_memberships[0]
+
+    # Tenant admins: ignore the internal Default Organization when they have a real company.
+    customer_memberships: list[OrganizationMembership] = []
+    for m in accessible_memberships:
+        org = _membership_org(db, m)
+        if org and org.slug != "default":
+            customer_memberships.append(m)
+
+    if len(customer_memberships) == 1:
+        return customer_memberships[0]
+
+    default_m = AuthService.get_default_membership(db, user.user_id)
+    if default_m:
+        for m in accessible_memberships:
+            if m.membership_id == default_m.membership_id:
+                org = _membership_org(db, m)
+                if org and (org.slug != "default" or not customer_memberships):
+                    return m
+
+    if customer_memberships:
+        return None
+
+    return accessible_memberships[0]
+
+
+def _organizations_for_picker(
+    db: Session,
+    user: User,
+    accessible_memberships: list[OrganizationMembership],
+) -> list[OrganizationSummary]:
+    """Org list for select-org — hide internal default workspace from tenant users."""
+    organizations: list[OrganizationSummary] = []
+    for m in accessible_memberships:
+        org = _membership_org(db, m)
+        if not org:
+            continue
+        if not user.is_platform_admin and org.slug == "default" and len(accessible_memberships) > 1:
+            continue
+        organizations.append(
+            OrganizationSummary(
+                org_id=org.organization_id,
+                slug=org.slug,
+                name=org.name,
+                role=m.role_name,
+                plan=org.plan.slug if org.plan else None,
+            )
+        )
+    return organizations
+
+
 def _issue_tokens_for_membership(
     db: Session,
     user: User,
@@ -185,7 +256,6 @@ def login(
     if not memberships:
         raise HTTPException(status_code=403, detail="User has no organization memberships")
 
-    organizations = []
     accessible_memberships = []
     for m in memberships:
         org = db.query(Organization).filter(Organization.organization_id == m.organization_id).first()
@@ -193,15 +263,6 @@ def login(
             continue
         if org.status in ("active", "trial", "pending"):
             accessible_memberships.append(m)
-            organizations.append(
-                OrganizationSummary(
-                    org_id=org.organization_id,
-                    slug=org.slug,
-                    name=org.name,
-                    role=m.role_name,
-                    plan=org.plan.slug if org.plan else None,
-                )
-            )
 
     if not accessible_memberships:
         raise HTTPException(
@@ -209,27 +270,34 @@ def login(
             detail="No active organization memberships available for this account",
         )
 
-    if len(accessible_memberships) > 1:
-        pre_token = AuthService.create_access_token(
-            data={"sub": user.user_id, "username": user.username, "type": "pre_auth"},
-            expires_delta=__import__("datetime").timedelta(minutes=15),
-        )
-        return {
-            "access_token": pre_token,
-            "refresh_token": "",
-            "token_type": "bearer",
-            "requires_org_selection": True,
-            "organizations": [o.model_dump() for o in organizations],
-            "user": {
-                "user_id": user.user_id,
-                "username": user.username,
-                "email": user.email,
-                "full_name": user.full_name,
-                "is_platform_admin": bool(user.is_platform_admin),
-            },
-        }
+    picked = _pick_login_membership(db, user, accessible_memberships)
+    if picked is None:
+        picker_orgs = _organizations_for_picker(db, user, accessible_memberships)
+        if len(picker_orgs) == 1:
+            picked = next(
+                m for m in accessible_memberships if m.organization_id == picker_orgs[0].org_id
+            )
+        else:
+            pre_token = AuthService.create_pre_auth_token(
+                data={"sub": user.user_id, "username": user.username},
+                expires_delta=__import__("datetime").timedelta(minutes=15),
+            )
+            return {
+                "access_token": pre_token,
+                "refresh_token": "",
+                "token_type": "bearer",
+                "requires_org_selection": True,
+                "organizations": [o.model_dump() for o in picker_orgs],
+                "user": {
+                    "user_id": user.user_id,
+                    "username": user.username,
+                    "email": user.email,
+                    "full_name": user.full_name,
+                    "is_platform_admin": bool(user.is_platform_admin),
+                },
+            }
 
-    membership = accessible_memberships[0]
+    membership = picked
     result = _issue_tokens_for_membership(db, user, membership, request, response)
     log_platform_audit(
         db,

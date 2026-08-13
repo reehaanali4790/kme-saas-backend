@@ -132,6 +132,23 @@ def get_tenant_db(
         clear_metering_org()
 
 
+def get_default_tenant_db() -> Generator[Session, None, None]:
+    """Public/read-only tenant data (e.g. login branding) before org is selected."""
+    db = SessionLocal()
+    try:
+        set_platform_search_path(db)
+        org = (
+            db.query(Organization)
+            .filter(Organization.slug == "default", Organization.status.in_(("active", "trial", "pending")))
+            .first()
+        )
+        schema = org.schema_name if org else DEFAULT_TENANT_SCHEMA
+        set_tenant_search_path(db, schema)
+        yield db
+    finally:
+        db.close()
+
+
 def list_active_tenant_contexts(db: Session) -> list[TenantContext]:
     set_platform_search_path(db)
     orgs = db.query(Organization).filter(Organization.status.in_(("active", "trial"))).all()

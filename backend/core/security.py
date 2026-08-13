@@ -59,6 +59,15 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     return _encode(data, expire, "access")
 
 
+def create_pre_auth_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """Short-lived token for org selection only — never validated as a session."""
+    expire = datetime.utcnow() + (
+        expires_delta or timedelta(minutes=15)
+    )
+    payload = {k: v for k, v in data.items() if k != "type"}
+    return _encode(payload, expire, "pre_auth")
+
+
 def create_refresh_token(data: dict) -> str:
     expire = datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     return _encode(data, expire, "refresh")

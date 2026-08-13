@@ -112,14 +112,23 @@ def _ensure_org(db: Session, slug: str, name: str, plan: str) -> Organization:
 
 
 def _ensure_membership(db: Session, user: User, org: Organization, role: str = "ADMIN") -> None:
-    memberships = AuthService.get_user_memberships(db, user.user_id)
-    is_default = len(memberships) == 0
+    existing = db.query(OrganizationMembership).filter(
+        OrganizationMembership.user_id == user.user_id,
+        OrganizationMembership.organization_id == org.organization_id,
+    ).first()
+    if existing:
+        for m in AuthService.get_user_memberships(db, user.user_id):
+            m.is_default = m.membership_id == existing.membership_id
+        db.commit()
+        return
+    for m in AuthService.get_user_memberships(db, user.user_id):
+        m.is_default = False
     AuthService.add_membership(
         db,
         user.user_id,
         org.organization_id,
         role,
-        is_default=is_default,
+        is_default=True,
     )
 
 

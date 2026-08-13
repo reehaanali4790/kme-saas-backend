@@ -65,12 +65,16 @@ async def get_current_user(
     if payload is None:
         raise credentials_exception
 
+    token_type = payload.get("type")
+    if token_type not in ("access", "pre_auth"):
+        raise credentials_exception
+
     user_id_val = payload.get("sub")
     if user_id_val is None:
         raise credentials_exception
     user_id = int(user_id_val)
 
-    if payload.get("type") == "access":
+    if token_type == "access":
         from core.redis import redis_cache
 
         hashed_token = AuthService.hash_token(token)

@@ -29,6 +29,10 @@ class AuthService:
         return security.create_access_token(data, expires_delta)
 
     @staticmethod
+    def create_pre_auth_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+        return security.create_pre_auth_token(data, expires_delta)
+
+    @staticmethod
     def create_refresh_token(data: dict) -> str:
         return security.create_refresh_token(data)
 
