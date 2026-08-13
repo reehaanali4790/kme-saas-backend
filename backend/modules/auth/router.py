@@ -94,6 +94,14 @@ def _issue_tokens_for_membership(
     if not org:
         raise HTTPException(status_code=400, detail="Organization not found")
 
+    # Align with tenant context: suspended/archived orgs cannot use the product.
+    # Platform admins still authenticate via an active/trial membership (e.g. default).
+    if org.status not in ("active", "trial", "pending"):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Organization '{org.name}' is {org.status} and cannot be accessed",
+        )
+
     plan_slug = org.plan.slug if org.plan else None
     token_data = build_token_payload(
         user=user,
@@ -178,9 +186,13 @@ def login(
         raise HTTPException(status_code=403, detail="User has no organization memberships")
 
     organizations = []
+    accessible_memberships = []
     for m in memberships:
         org = db.query(Organization).filter(Organization.organization_id == m.organization_id).first()
-        if org:
+        if not org:
+            continue
+        if org.status in ("active", "trial", "pending"):
+            accessible_memberships.append(m)
             organizations.append(
                 OrganizationSummary(
                     org_id=org.organization_id,
@@ -191,7 +203,13 @@ def login(
                 )
             )
 
-    if len(memberships) > 1:
+    if not accessible_memberships:
+        raise HTTPException(
+            status_code=403,
+            detail="No active organization memberships available for this account",
+        )
+
+    if len(accessible_memberships) > 1:
         pre_token = AuthService.create_access_token(
             data={"sub": user.user_id, "username": user.username, "type": "pre_auth"},
             expires_delta=__import__("datetime").timedelta(minutes=15),
@@ -211,7 +229,7 @@ def login(
             },
         }
 
-    membership = AuthService.get_default_membership(db, user.user_id)
+    membership = accessible_memberships[0]
     result = _issue_tokens_for_membership(db, user, membership, request, response)
     log_platform_audit(
         db,
