@@ -168,12 +168,34 @@ def upload_and_extract(
             detail=f"Only JPG, PNG and PDF files are supported. Got: {ext}"
         )
 
-    if not settings.ANTHROPIC_API_KEY:
+    if not settings.ANTHROPIC_API_KEY and not settings.GEMINI_API_KEY:
         raise HTTPException(
             status_code=503,
             detail="AI extraction is not set up on this server. Please contact support, "
                    "or enter the details manually."
         )
+
+    from config.database import SessionLocal, set_platform_search_path
+    from core.platform_metering import enforce_and_increment_document, record_ai_usage_event
+    from models.platform_models import Organization as PlatformOrg
+
+    platform_db = SessionLocal()
+    try:
+        set_platform_search_path(platform_db)
+        org = platform_db.query(PlatformOrg).filter(
+            PlatformOrg.organization_id == tenant.organization_id
+        ).first()
+        if org:
+            enforce_and_increment_document(platform_db, org.organization_id)
+            platform_db.commit()
+    except HTTPException:
+        platform_db.rollback()
+        raise
+    except Exception:
+        platform_db.rollback()
+        raise
+    finally:
+        platform_db.close()
 
     # If created within a shipment, inherit the shipment + its LC
     shipment_lc_id = None
@@ -275,6 +297,29 @@ def upload_and_extract(
     extracted["bl_type"] = bl.bl_type
     db.commit()
     db.refresh(bl)
+
+    try:
+        method = (extracted or {}).get("_extraction_method") or "unknown"
+        record_ai_usage_event(
+            tenant.organization_id,
+            event_type="extraction",
+            model=str(method),
+            doc_type="bl",
+            success=True,
+        )
+        size = os.path.getsize(stored_path) if os.path.isfile(stored_path) else 0
+        if size > 0:
+            from core.plan_limits import get_or_create_usage_counter
+            pdb = SessionLocal()
+            try:
+                set_platform_search_path(pdb)
+                counter = get_or_create_usage_counter(pdb, tenant.organization_id)
+                counter.storage_bytes = (counter.storage_bytes or 0) + size
+                pdb.commit()
+            finally:
+                pdb.close()
+    except Exception:
+        pass
 
     return {
         "bl_id": bl.bl_id,

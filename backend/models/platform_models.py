@@ -265,3 +265,25 @@ class PlatformAuditLog(Base):
     description: Mapped[str | None] = mapped_column(Text)
     ip_address: Mapped[str | None] = mapped_column(INET)
     created_at: Mapped[datetime | None] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
+class AiUsageEvent(Base):
+    """Per-tenant AI extraction / assistant usage events for the SaaS admin suite."""
+
+    __tablename__ = "ai_usage_events"
+    __table_args__ = (
+        Index("idx_ai_usage_org_created", "organization_id", "created_at"),
+        {"schema": PLATFORM_SCHEMA},
+    )
+
+    event_id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey(f"{PLATFORM_SCHEMA}.organizations.organization_id", ondelete="SET NULL"),
+        index=True,
+    )
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False, default="extraction")
+    model: Mapped[str | None] = mapped_column(String(100))
+    doc_type: Mapped[str | None] = mapped_column(String(50))
+    success: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, server_default=func.now(), index=True)

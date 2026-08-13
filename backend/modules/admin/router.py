@@ -15,7 +15,7 @@ from core.permissions import require_permission
 from core.schemas import PaginatedResponse, PaginationParams
 from core.tenant import get_tenant_db, TenantContext, get_tenant_context
 from models.database_models import Role
-from models.platform_models import User, UserSession, OrganizationMembership
+from models.platform_models import User, UserSession, OrganizationMembership, Organization
 from modules.auth.dependencies import get_current_user
 from modules.auth.services import AuthService
 from infrastructure.audit.audit_service import log_audit
@@ -116,6 +116,13 @@ def create_user(
 ):
     if not tenant_db.query(Role).filter(Role.role_name == req.role_name).first():
         raise HTTPException(status_code=400, detail="Invalid role")
+
+    org = platform_db.query(Organization).filter(
+        Organization.organization_id == tenant.organization_id
+    ).first()
+    if org:
+        from core.plan_limits import check_user_limit
+        check_user_limit(platform_db, org)
 
     existing = AuthService.get_user_by_username(platform_db, req.username)
     if existing:

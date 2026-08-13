@@ -22,6 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SAAS_BOOTSTRAP_MIGRATIONS = frozenset({
     "migrate_platform_schema.py",
     "migrate_single_tenant_to_schema.py",
+    "migrate_ai_usage_events.py",
 })
 
 # Order matters: bill_of_ladings must exist before shipment_tables links it; shipments
@@ -77,6 +78,7 @@ MIGRATIONS = [
                                         # approval_id/matched_sro_no/is_finalized, gd_attachments.ex_bond_entry_id
     "migrate_partial_gd_unique_gd_number.py",  # unique EB GD Number per Into-Bond GD (case/whitespace-insensitive)
     "migrate_bl_type.py",              # bill_of_ladings.bl_type (COIL/CONTAINER) + backfill from is_container_bl()
+    "migrate_ai_usage_events.py",      # platform.ai_usage_events for SaaS Admin Suite AI metering
 ]
 
 

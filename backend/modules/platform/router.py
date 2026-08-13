@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -390,3 +390,129 @@ def update_organization_plan(
         "plan": plan.slug,
         "plan_name": plan.name,
     }
+
+
+# ── SaaS Admin Suite control-plane endpoints ─────────────────────────────────
+
+@router.get("/command-center")
+def command_center(
+    request: Request,
+    db: Session = Depends(get_platform_db),
+    admin: User = Depends(require_platform_admin()),
+):
+    from modules.platform.platform_service import build_command_center
+
+    return build_command_center(db, getattr(request.app, "state", None))
+
+
+@router.get("/usage")
+def platform_usage(
+    db: Session = Depends(get_platform_db),
+    admin: User = Depends(require_platform_admin()),
+):
+    from modules.platform.platform_service import build_usage_rows
+
+    return {"items": build_usage_rows(db)}
+
+
+@router.get("/usage/{org_id}")
+def platform_usage_org(
+    org_id: int,
+    db: Session = Depends(get_platform_db),
+    admin: User = Depends(require_platform_admin()),
+):
+    from modules.platform.platform_service import build_usage_for_org
+
+    try:
+        return build_usage_for_org(db, org_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@router.get("/billing")
+def platform_billing(
+    db: Session = Depends(get_platform_db),
+    admin: User = Depends(require_platform_admin()),
+):
+    from modules.platform.platform_service import build_billing_rows
+
+    return {"items": build_billing_rows(db)}
+
+
+@router.get("/plans")
+def platform_plans(
+    db: Session = Depends(get_platform_db),
+    admin: User = Depends(require_platform_admin()),
+):
+    from modules.platform.platform_service import build_plans
+
+    return {"items": build_plans(db)}
+
+
+@router.patch("/plans/{plan_id}")
+def platform_update_plan(
+    plan_id: int,
+    body: dict,
+    db: Session = Depends(get_platform_db),
+    admin: User = Depends(require_platform_admin()),
+):
+    from modules.platform.platform_service import update_plan, build_plans
+
+    try:
+        update_plan(db, plan_id, body)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    log_platform_audit(
+        db,
+        admin.user_id,
+        "UPDATE_PLAN",
+        entity_type="PLAN",
+        entity_id=plan_id,
+        description=f"Updated plan {plan_id}",
+    )
+    db.commit()
+    items = build_plans(db)
+    return next((p for p in items if p["plan_id"] == plan_id), {"plan_id": plan_id})
+
+
+@router.get("/audit")
+def platform_audit(
+    page: int = 1,
+    page_size: int = 50,
+    db: Session = Depends(get_platform_db),
+    admin: User = Depends(require_platform_admin()),
+):
+    from modules.platform.platform_service import build_audit
+
+    return build_audit(db, page=page, page_size=page_size)
+
+
+@router.get("/infra")
+def platform_infra(
+    request: Request,
+    db: Session = Depends(get_platform_db),
+    admin: User = Depends(require_platform_admin()),
+):
+    from modules.platform.platform_service import build_infra
+
+    return build_infra(db, getattr(request.app, "state", None))
+
+
+@router.get("/ai")
+def platform_ai(
+    db: Session = Depends(get_platform_db),
+    admin: User = Depends(require_platform_admin()),
+):
+    from modules.platform.platform_service import build_ai_overview
+
+    return build_ai_overview(db)
+
+
+@router.get("/settings")
+def platform_settings(
+    admin: User = Depends(require_platform_admin()),
+):
+    from modules.platform.platform_service import build_settings_health
+
+    return build_settings_health()
+
