@@ -47,11 +47,11 @@ def test_list_users_includes_self(authenticated_client):
 def test_create_user_duplicate_username_rejected(authenticated_client, make_user):
     existing, _ = make_user(role_name="VIEWER")
     roles = authenticated_client.get("/api/admin/roles").json()
-    role_id = next(r["role_id"] for r in roles if r["role_name"] == "VIEWER")
+    role_name = next(r["role_name"] for r in roles if r["role_name"] == "VIEWER")
 
     resp = authenticated_client.post("/api/admin/users", json={
         "username": existing.username, "full_name": "Dup", "email": "dup@test.com",
-        "password": "Test1234!", "role_id": role_id,
+        "password": "Test1234!", "role_name": role_name,
     })
     assert resp.status_code == 400
 
@@ -59,17 +59,17 @@ def test_create_user_duplicate_username_rejected(authenticated_client, make_user
 def test_create_update_toggle_user_lifecycle(authenticated_client, make_user):
     make_user(role_name="VIEWER")  # ensures the VIEWER Role row exists in the test DB
     roles = authenticated_client.get("/api/admin/roles").json()
-    role_id = next(r["role_id"] for r in roles if r["role_name"] == "VIEWER")
+    role_name = next(r["role_name"] for r in roles if r["role_name"] == "VIEWER")
 
     created = authenticated_client.post("/api/admin/users", json={
         "username": "newtestuser", "full_name": "New Test User",
-        "email": "newtestuser@test.com", "password": "Test1234!", "role_id": role_id,
+        "email": "newtestuser@test.com", "password": "Test1234!", "role_name": role_name,
     })
     assert created.status_code == 201, created.text
     user_id = created.json()["user_id"]
 
     updated = authenticated_client.put(f"/api/admin/users/{user_id}", json={
-        "full_name": "Updated Name", "email": "newtestuser@test.com", "role_id": role_id,
+        "full_name": "Updated Name", "email": "newtestuser@test.com", "role_name": role_name,
     })
     assert updated.status_code == 200
 
