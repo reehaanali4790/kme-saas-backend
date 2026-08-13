@@ -56,6 +56,18 @@ def test_create_user_duplicate_username_rejected(authenticated_client, make_user
     assert resp.status_code == 400
 
 
+def test_create_user_accepts_role_id(authenticated_client, make_user):
+    make_user(role_name="VIEWER")
+    roles = authenticated_client.get("/api/admin/roles").json()
+    role_id = next(r["role_id"] for r in roles if r["role_name"] == "VIEWER")
+
+    created = authenticated_client.post("/api/admin/users", json={
+        "username": "roleiduser", "full_name": "Role ID User",
+        "email": "roleiduser@test.com", "password": "Test1234!", "role_id": role_id,
+    })
+    assert created.status_code == 201, created.text
+
+
 def test_create_update_toggle_user_lifecycle(authenticated_client, make_user):
     make_user(role_name="VIEWER")  # ensures the VIEWER Role row exists in the test DB
     roles = authenticated_client.get("/api/admin/roles").json()

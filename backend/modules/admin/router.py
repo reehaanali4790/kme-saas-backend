@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
@@ -23,23 +23,57 @@ from infrastructure.audit.audit_service import log_audit
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
 
 
+def _resolve_role_name(
+    tenant_db: Session,
+    *,
+    role_name: Optional[str] = None,
+    role_id: Optional[int] = None,
+) -> str:
+    """Accept role_name or role_id from clients; always return canonical role_name."""
+    if role_name and role_name.strip():
+        name = role_name.strip()
+        if tenant_db.query(Role).filter(Role.role_name == name).first():
+            return name
+        raise HTTPException(status_code=400, detail="Invalid role")
+    if role_id is not None:
+        role = tenant_db.query(Role).filter(Role.role_id == role_id).first()
+        if role:
+            return role.role_name
+        raise HTTPException(status_code=400, detail="Invalid role")
+    raise HTTPException(status_code=400, detail="role_name or role_id is required")
+
+
 class CreateUserRequest(BaseModel):
     username: str
     full_name: str
     email: str
     password: str
-    role_name: str
+    role_name: Optional[str] = None
+    role_id: Optional[int] = None
     phone_number: Optional[str] = None
     whatsapp_number: Optional[str] = None
+
+    @model_validator(mode="after")
+    def require_role(self):
+        if not self.role_name and self.role_id is None:
+            raise ValueError("role_name or role_id is required")
+        return self
 
 
 class UpdateUserRequest(BaseModel):
     full_name: str
     email: str
-    role_name: str
+    role_name: Optional[str] = None
+    role_id: Optional[int] = None
     phone_number: Optional[str] = None
     whatsapp_number: Optional[str] = None
     active: bool = True
+
+    @model_validator(mode="after")
+    def require_role(self):
+        if not self.role_name and self.role_id is None:
+            raise ValueError("role_name or role_id is required")
+        return self
 
 
 class ResetPasswordRequest(BaseModel):
@@ -114,8 +148,7 @@ def create_user(
     tenant_db: Session = Depends(get_tenant_db),
     current_user: User = Depends(require_permission("manage_users")),
 ):
-    if not tenant_db.query(Role).filter(Role.role_name == req.role_name).first():
-        raise HTTPException(status_code=400, detail="Invalid role")
+    role_name = _resolve_role_name(tenant_db, role_name=req.role_name, role_id=req.role_id)
 
     org = platform_db.query(Organization).filter(
         Organization.organization_id == tenant.organization_id
@@ -127,7 +160,7 @@ def create_user(
     existing = AuthService.get_user_by_username(platform_db, req.username)
     if existing:
         AuthService.add_membership(
-            platform_db, existing.user_id, tenant.organization_id, req.role_name
+            platform_db, existing.user_id, tenant.organization_id, role_name
         )
         return {"success": True, "user_id": existing.user_id, "message": "User added to organization."}
 
@@ -141,10 +174,10 @@ def create_user(
         whatsapp_number=req.whatsapp_number,
         created_by=current_user.user_id,
     )
-    AuthService.add_membership(platform_db, user.user_id, tenant.organization_id, req.role_name)
+    AuthService.add_membership(platform_db, user.user_id, tenant.organization_id, role_name)
     log_audit(
         tenant_db, current_user.user_id, "CREATE_USER", entity_type="USER", entity_id=user.user_id,
-        new_value={"username": user.username, "email": user.email, "role_name": req.role_name},
+        new_value={"username": user.username, "email": user.email, "role_name": role_name},
         description=f"Created user '{req.username}'",
     )
     tenant_db.commit()
@@ -171,8 +204,7 @@ def update_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if not tenant_db.query(Role).filter(Role.role_name == req.role_name).first():
-        raise HTTPException(status_code=400, detail="Invalid role")
+    role_name = _resolve_role_name(tenant_db, role_name=req.role_name, role_id=req.role_id)
 
     clash = platform_db.query(User).filter(User.email == req.email, User.user_id != user_id).first()
     if clash:
@@ -185,11 +217,11 @@ def update_user(
     user.active = req.active
     user.updated_by = current_user.user_id
     user.updated_at = datetime.utcnow()
-    membership.role_name = req.role_name
+    membership.role_name = role_name
 
     log_audit(
         tenant_db, current_user.user_id, "UPDATE_USER", entity_type="USER", entity_id=user.user_id,
-        new_value={"full_name": req.full_name, "email": req.email, "role_name": req.role_name, "active": req.active},
+        new_value={"full_name": req.full_name, "email": req.email, "role_name": role_name, "active": req.active},
         description=f"Updated user '{user.username}'",
     )
     platform_db.commit()
