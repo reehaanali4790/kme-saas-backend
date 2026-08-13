@@ -238,6 +238,7 @@ class GDSave(BaseModel):
 
 class GDStatusUpdate(BaseModel):
     status: str
+    override_reason: Optional[str] = None
 
     @field_validator("status", mode="before")
     @classmethod

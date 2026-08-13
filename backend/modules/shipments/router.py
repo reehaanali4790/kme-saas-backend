@@ -6,7 +6,7 @@ CRUD + LC-anchored creation + running balance + document aggregation.
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -20,6 +20,8 @@ from modules.lc_creation.helpers.shipment_validator import validate_shipment
 from modules.shipments import services as svc
 from modules.shipments import journey_service as journey_svc
 from modules.shipments.schemas import ShipmentCreate, ShipmentCreateResult, ShipmentUpdate
+from modules.workflow.helpers import check_gate
+from modules.workflow.constants import ACTION_SET_DELIVERY
 
 logger = logging.getLogger("uvicorn")
 
@@ -211,8 +213,12 @@ def get_shipment(shipment_id: int, db: Session = Depends(get_tenant_db),
 # ---------------------------------------------------------------------------
 
 @router.put("/{shipment_id}")
-def update_shipment(shipment_id: int, data: ShipmentUpdate, db: Session = Depends(get_tenant_db),
+def update_shipment(shipment_id: int, data: ShipmentUpdate, request: Request,
+                    db: Session = Depends(get_tenant_db),
                     current_user: User = Depends(_can_write)):
+    if data.delivery_date is not None:
+        check_gate(db, request, shipment_id, ACTION_SET_DELIVERY,
+                   user_id=current_user.user_id, override_reason=data.override_reason)
     svc.update_shipment(shipment_id, data, db, current_user.user_id)
     return {"success": True, "shipment_id": shipment_id}
 

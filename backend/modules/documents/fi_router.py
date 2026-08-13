@@ -8,7 +8,7 @@ import os
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Request
 from infrastructure.documents.document_files import document_file_response
 from sqlalchemy.orm import Session
 
@@ -23,6 +23,8 @@ from core.platform_metering import enforce_document_quota, meter_document_accept
 from modules.documents.extractors.fi_extractor import extract_fi
 from modules.documents import fi_service as svc
 from modules.documents.fi_schemas import FISave
+from modules.workflow.helpers import check_gate
+from modules.workflow.constants import ACTION_UPLOAD_FI
 
 logger = logging.getLogger("uvicorn")
 
@@ -35,11 +37,15 @@ _can_write = require_min_role("ADMIN", "MANAGER", "OPERATOR")
 
 @router.post("/upload-and-extract")
 def upload_and_extract(
+    request: Request,
     shipment_id: int = Query(...),
+    override_reason: str | None = Query(None),
     file: UploadFile = File(...),
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(_can_write),
 ):
+    check_gate(db, request, shipment_id, ACTION_UPLOAD_FI,
+               user_id=current_user.user_id, override_reason=override_reason)
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
     ext = Path(file.filename).suffix.lower()

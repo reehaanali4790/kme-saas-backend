@@ -1,0 +1,38 @@
+"""Workflow gate helpers."""
+from __future__ import annotations
+
+from typing import Optional
+
+from fastapi import Request
+from sqlalchemy.orm import Session
+
+from core.permissions import _role_from_request
+
+
+def role_from_request(request: Request) -> str:
+    return _role_from_request(request) or "VIEWER"
+
+
+def check_gate(
+    db: Session,
+    request: Request,
+    shipment_id: int,
+    action: str,
+    *,
+    user_id: int,
+    override_reason: Optional[str] = None,
+    gd_id: Optional[int] = None,
+    target_status: Optional[str] = None,
+) -> None:
+    from modules.workflow import gates as gate_svc
+
+    gate_svc.assert_step_allowed_for_user(
+        db,
+        shipment_id,
+        action,
+        user_id=user_id,
+        role_name=role_from_request(request),
+        override_reason=override_reason,
+        gd_id=gd_id,
+        target_status=target_status,
+    )

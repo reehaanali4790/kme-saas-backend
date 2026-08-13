@@ -90,6 +90,7 @@ class ShipmentUpdate(BaseModel):
     eta_source: Optional[str] = None
 
     exchange_rate: Optional[Decimal] = None
+    override_reason: Optional[str] = None
 
     @field_validator(
         "shipment_ref", "category", "lot_number", "vessel_name", "voyage_number",

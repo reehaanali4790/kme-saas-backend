@@ -7,7 +7,7 @@ import logging
 from datetime import date
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Request
 from infrastructure.documents.document_files import document_file_response
 from sqlalchemy.orm import Session
 
@@ -36,6 +36,11 @@ from .schemas import (
     GDViewSave, ItemDetailsSave, IntoBondGDSave, ExBondGDSave, ExBondEntrySave,
     GdKgtlWeighmentSave, BondPenaltySave, DeclarationTypeOverride
 )
+from modules.workflow.constants import (
+    ACTION_UPLOAD_GD_VIEW, ACTION_UPLOAD_ITEM_DETAILS,
+    ACTION_UPLOAD_INTO_BOND_GD, ACTION_UPLOAD_EX_BOND_GD,
+)
+from modules.workflow.helpers import check_gate
 
 logger = logging.getLogger("uvicorn")
 
@@ -63,11 +68,15 @@ def _check_ext(file: UploadFile) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 @gd_view_router.post("/upload-and-extract")
 async def gd_view_upload_and_extract(
+    request: Request,
     shipment_id: int = Query(...),
+    override_reason: str | None = Query(None),
     file: UploadFile = File(...),
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(require_min_role("ADMIN", "MANAGER", "OPERATOR")),
 ):
+    check_gate(db, request, shipment_id, ACTION_UPLOAD_GD_VIEW,
+               user_id=current_user.user_id, override_reason=override_reason)
     ext, filename = _check_ext(file)
     shipment = svc.get_shipment_or_error(shipment_id, db)
     gd = svc.get_or_create_gd_for_shipment(shipment, db, current_user.user_id)
@@ -134,11 +143,15 @@ def gd_view_document(
 # ---------------------------------------------------------------------------
 @item_details_router.post("/upload-and-extract")
 async def item_details_upload_and_extract(
+    request: Request,
     shipment_id: int = Query(...),
+    override_reason: str | None = Query(None),
     file: UploadFile = File(...),
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(require_min_role("ADMIN", "MANAGER", "OPERATOR")),
 ):
+    check_gate(db, request, shipment_id, ACTION_UPLOAD_ITEM_DETAILS,
+               user_id=current_user.user_id, override_reason=override_reason)
     ext, filename = _check_ext(file)
     shipment = svc.get_shipment_or_error(shipment_id, db)
     gd = svc.get_or_create_gd_for_shipment(shipment, db, current_user.user_id)
@@ -437,11 +450,15 @@ def set_declaration_type(
 # ---------------------------------------------------------------------------
 @into_bond_gd_router.post("/upload-and-extract")
 async def into_bond_gd_upload_and_extract(
+    request: Request,
     shipment_id: int = Query(...),
+    override_reason: str | None = Query(None),
     file: UploadFile = File(...),
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(require_min_role("ADMIN", "MANAGER", "OPERATOR")),
 ):
+    check_gate(db, request, shipment_id, ACTION_UPLOAD_INTO_BOND_GD,
+               user_id=current_user.user_id, override_reason=override_reason)
     ext, filename = _check_ext(file)
     shipment = svc.get_shipment_or_error(shipment_id, db)
     gd = svc.get_or_create_gd_for_shipment(shipment, db, current_user.user_id)
@@ -514,11 +531,15 @@ def into_bond_gd_document(
 # ---------------------------------------------------------------------------
 @ex_bond_gd_router.post("/upload-and-extract")
 async def ex_bond_gd_upload_and_extract(
+    request: Request,
     shipment_id: int = Query(...),
+    override_reason: str | None = Query(None),
     file: UploadFile = File(...),
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(require_min_role("ADMIN", "MANAGER", "OPERATOR")),
 ):
+    check_gate(db, request, shipment_id, ACTION_UPLOAD_EX_BOND_GD,
+               user_id=current_user.user_id, override_reason=override_reason)
     ext, filename = _check_ext(file)
     shipment = svc.get_shipment_or_error(shipment_id, db)
     gd = svc.get_or_create_gd_for_shipment(shipment, db, current_user.user_id)

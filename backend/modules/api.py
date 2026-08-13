@@ -47,11 +47,12 @@ from modules.reports.report_master_router import router as report_master_router,
 from modules.branding.router import router as branding_router
 from modules.billing.router import router as billing_router
 from modules.platform.router import router as platform_router
+from modules.workflow.router import router as workflow_router
 
 api_router = APIRouter()
 
 for _module_router in (
-    auth_router, billing_router, platform_router, alert_router, upload_router, lc_table_router, currency_router,
+    auth_router, billing_router, platform_router, workflow_router, alert_router, upload_router, lc_table_router, currency_router,
     pdf_router, calculation_router, lme_rates_router, lme_web_sync_router, admin_router, bl_router,
     shipment_router, invoice_router, packing_router, gd_router, gd_view_router,
     item_details_router, into_bond_gd_router, ex_bond_gd_router, weboc_router,

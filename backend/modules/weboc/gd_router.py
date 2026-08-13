@@ -8,7 +8,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Request
 from infrastructure.documents.document_files import document_file_response
 from sqlalchemy.orm import Session
 
@@ -24,6 +24,8 @@ from modules.weboc.extractors.gd_extractor_service import extract_gd
 from modules.lc_creation.helpers.shipment_validator import cross_check_gd_extracted
 from modules.weboc import gd_service as svc
 from modules.weboc.gd_schemas import GDSave, GDSaveResult, GDStatusUpdate
+from modules.workflow.helpers import check_gate
+from modules.workflow.constants import ACTION_UPLOAD_GD, ACTION_GD_ADVANCE, ACTION_GD_SET_STATUS
 
 logger = logging.getLogger("uvicorn")
 
@@ -42,11 +44,15 @@ gd_is_closed = svc.gd_is_closed
 
 @router.post("/upload-and-extract")
 def upload_and_extract(
+    request: Request,
     shipment_id: int = Query(...),
+    override_reason: str | None = Query(None),
     file: UploadFile = File(...),
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(_can_write),
 ):
+    check_gate(db, request, shipment_id, ACTION_UPLOAD_GD,
+               user_id=current_user.user_id, override_reason=override_reason)
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
     ext = Path(file.filename).suffix.lower()
@@ -177,10 +183,14 @@ def get_document(gd_id: int, db: Session = Depends(get_tenant_db),
 # ---------------------------------------------------------------------------
 
 @router.post("/{gd_id}/advance")
-def advance_status(gd_id: int, db: Session = Depends(get_tenant_db),
+def advance_status(gd_id: int, request: Request, db: Session = Depends(get_tenant_db),
+                   override_reason: str | None = Query(None),
                    current_user: User = Depends(_can_write)):
     """Move the GD to the next stage in its workflow (gd_type-dependent)."""
     gd = svc.get_gd_or_404(gd_id, db)
+    if gd.shipment_id:
+        check_gate(db, request, gd.shipment_id, ACTION_GD_ADVANCE,
+                   user_id=current_user.user_id, override_reason=override_reason, gd_id=gd_id)
     stages = svc.stages_for(gd)
     cur = gd.status if gd.status in stages else "FILED"
     if cur == stages[-1]:
@@ -201,11 +211,17 @@ def advance_status(gd_id: int, db: Session = Depends(get_tenant_db),
 
 
 @router.put("/{gd_id}/status")
-def set_status(gd_id: int, data: GDStatusUpdate, db: Session = Depends(get_tenant_db),
+def set_status(gd_id: int, data: GDStatusUpdate, request: Request,
+               db: Session = Depends(get_tenant_db),
                current_user: User = Depends(_can_write)):
     """Set a specific status. Must be a stage of the GD's workflow, or DISPUTED (side flag)."""
     gd = svc.get_gd_or_404(gd_id, db)
     target = data.status
+    if gd.shipment_id:
+        check_gate(db, request, gd.shipment_id, ACTION_GD_SET_STATUS,
+                   user_id=current_user.user_id,
+                   override_reason=data.override_reason,
+                   gd_id=gd_id, target_status=target)
     allowed = set(svc.stages_for(gd)) | {"DISPUTED", "CLEARED"}
     if target not in allowed:
         raise HTTPException(status_code=400,
