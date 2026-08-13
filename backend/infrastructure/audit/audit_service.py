@@ -8,6 +8,7 @@ the action it's recording.
 """
 
 import logging
+
 from models.database_models import AuditLog
 
 logger = logging.getLogger("uvicorn")
@@ -38,3 +39,36 @@ def log_audit(db, user_id, action, entity_type=None, entity_id=None,
         ))
     except Exception as e:  # pragma: no cover - defensive; audit must never break the action
         logger.warning(f"log_audit failed (ignored): {e}")
+
+
+def log_platform_audit(
+    db,
+    user_id,
+    action,
+    entity_type=None,
+    entity_id=None,
+    organization_id=None,
+    description=None,
+    ip_address=None,
+):
+    """Add a platform.platform_audit_log row (for auth / SaaS admin actions).
+
+    Use this when the caller's session is scoped to the platform schema — not a
+    tenant schema. Tenant-scoped actions should keep using log_audit().
+    """
+    try:
+        from models.platform_models import PlatformAuditLog
+
+        db.add(
+            PlatformAuditLog(
+                user_id=user_id,
+                organization_id=organization_id,
+                action=str(action)[:100],
+                entity_type=(str(entity_type)[:50] if entity_type else None),
+                entity_id=entity_id,
+                description=(str(description)[:2000] if description else None),
+                ip_address=ip_address,
+            )
+        )
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"log_platform_audit failed (ignored): {e}")

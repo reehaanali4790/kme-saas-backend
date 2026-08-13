@@ -33,7 +33,7 @@ from modules.auth.schemas import (
     UserResponse,
 )
 from modules.auth.services import AuthService
-from infrastructure.audit.audit_service import log_audit
+from infrastructure.audit.audit_service import log_platform_audit
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
@@ -158,9 +158,14 @@ def login(
 ):
     user = AuthService.authenticate_user(db, form_data.username, form_data.password)
     if not user:
-        log_audit(db, None, "LOGIN_FAILED", entity_type="USER",
-                  description=f"Failed login attempt for username '{form_data.username}'",
-                  ip_address=_get_client_ip(request))
+        log_platform_audit(
+            db,
+            None,
+            "LOGIN_FAILED",
+            entity_type="USER",
+            description=f"Failed login attempt for username '{form_data.username}'",
+            ip_address=_get_client_ip(request),
+        )
         db.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -208,9 +213,16 @@ def login(
 
     membership = AuthService.get_default_membership(db, user.user_id)
     result = _issue_tokens_for_membership(db, user, membership, request, response)
-    log_audit(db, user.user_id, "LOGIN", entity_type="USER", entity_id=user.user_id,
-              description=f"User '{user.username}' logged in",
-              ip_address=_get_client_ip(request))
+    log_platform_audit(
+        db,
+        user.user_id,
+        "LOGIN",
+        entity_type="USER",
+        entity_id=user.user_id,
+        organization_id=membership.organization_id,
+        description=f"User '{user.username}' logged in",
+        ip_address=_get_client_ip(request),
+    )
     db.commit()
     return result
 
@@ -232,9 +244,16 @@ def select_org(
         raise HTTPException(status_code=403, detail="Not a member of this organization")
 
     result = _issue_tokens_for_membership(db, current_user, membership, request, response)
-    log_audit(db, current_user.user_id, "SELECT_ORG", entity_type="ORGANIZATION",
-              entity_id=body.org_id, description=f"Selected org {body.org_id}",
-              ip_address=_get_client_ip(request))
+    log_platform_audit(
+        db,
+        current_user.user_id,
+        "SELECT_ORG",
+        entity_type="ORGANIZATION",
+        entity_id=body.org_id,
+        organization_id=body.org_id,
+        description=f"Selected org {body.org_id}",
+        ip_address=_get_client_ip(request),
+    )
     db.commit()
     return result
 
@@ -271,10 +290,16 @@ def logout(
         if session:
             session.active = False
             session.logout_time = datetime.utcnow()
-            log_audit(db, current_user.user_id, "LOGOUT", entity_type="USER",
-                      entity_id=current_user.user_id,
-                      description=f"User '{current_user.username}' logged out",
-                      ip_address=_get_client_ip(request))
+            log_platform_audit(
+                db,
+                current_user.user_id,
+                "LOGOUT",
+                entity_type="USER",
+                entity_id=current_user.user_id,
+                organization_id=session.organization_id,
+                description=f"User '{current_user.username}' logged out",
+                ip_address=_get_client_ip(request),
+            )
             db.commit()
 
         from core.redis import redis_cache
@@ -345,9 +370,14 @@ def change_password(
         )
     current_user.password_hash = AuthService.hash_password(request.new_password)
     current_user.updated_at = datetime.utcnow()
-    log_audit(db, current_user.user_id, "CHANGE_PASSWORD", entity_type="USER",
-              entity_id=current_user.user_id,
-              description=f"User '{current_user.username}' changed their own password")
+    log_platform_audit(
+        db,
+        current_user.user_id,
+        "CHANGE_PASSWORD",
+        entity_type="USER",
+        entity_id=current_user.user_id,
+        description=f"User '{current_user.username}' changed their own password",
+    )
     db.commit()
     return {"message": "Password changed successfully"}
 
