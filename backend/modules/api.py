@@ -41,6 +41,7 @@ from modules.reports.dashboard_router import router as dashboard_router
 from modules.bank_limits.router import router as bank_limit_router
 from modules.shipments.vessel_tracker_router import router as vessel_tracker_router
 from modules.alerts.expiries_router import router as expiries_router
+from modules.alerts.action_center_router import router as action_center_router
 from modules.finance.roi_router import router as roi_router
 from modules.reports.report_master_router import router as report_master_router, router_underscore as report_master_underscore_router
 from modules.branding.router import router as branding_router
@@ -58,7 +59,7 @@ for _module_router in (
     fi_router, insurance_router, shipment_doc_router, report_router,
     demurrage_router, container_detention_router, sro_router, contract_router,
     lc_create_router, lookup_router,
-    alert_engine_router, assistant_router, dashboard_router, bank_limit_router,
+    alert_engine_router, action_center_router, assistant_router, dashboard_router, bank_limit_router,
     vessel_tracker_router, expiries_router, roi_router, report_master_router, report_master_underscore_router,
     branding_router, billing_router, platform_router,
 ):

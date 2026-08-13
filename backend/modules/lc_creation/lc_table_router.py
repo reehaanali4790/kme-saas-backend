@@ -22,6 +22,7 @@ from modules.auth.services import AuthService
 from infrastructure.formula_engine.formula_engine import FormulaEngine
 from modules.lc_creation.helpers.buyer_allocation import apply_allocations, serialize_allocations
 from infrastructure.normalization.normalization_service import normalize_lc_master, detect_quality
+from modules.shipments import journey_service as journey_svc
 
 router = APIRouter(prefix="/api/lc-table", tags=["LC Table"])
 
@@ -386,6 +387,16 @@ _LC_DATE_FIELDS = ["contract_date", "lc_date", "expiry_date", "last_ship_date"]
 # Product line fields
 _PROD_STR_FIELDS = ["product_code", "product_name", "origin", "quality", "hs_code", "grade", "size"]
 _PROD_DEC_FIELDS = ["quantity", "lc_unit_price", "lc_amount"]
+
+
+@router.get("/{lc_id}/completeness")
+def lc_completeness(
+    lc_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    """Progress % for LC journey across all shipments."""
+    return journey_svc.lc_completeness(lc_id, db)
 
 
 @router.get("/{lc_id}")

@@ -6,7 +6,7 @@ import os
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from sqlalchemy.exc import DataError
 from sqlalchemy.orm import Session
@@ -14,6 +14,8 @@ from config.settings import settings
 from core.exceptions import ValidationError
 from models.database_models import BookedBy, Contract, Importer, Indentor, LCMaster, LCProduct, Supplier
 from modules.lc_creation.helpers.buyer_allocation import apply_allocations
+from modules.shipments.schemas import ShipmentCreate
+from modules.shipments import services as shipment_svc
 from infrastructure.field_limits.field_limits import FieldTooLong, fit_values
 from infrastructure.normalization.normalization_service import (
     match_bank, match_company, normalize_item, clean_goods_description, validate_text_field, detect_quality,
@@ -28,7 +30,7 @@ STAGE_DIR = os.path.join(UPLOAD_DIR, "_staged")
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
 
 
-def create_lc(db: Session, data: LCCreate, created_by: int) -> Tuple[LCMaster, List[str]]:
+def create_lc(db: Session, data: LCCreate, created_by: int) -> Tuple[LCMaster, List[str], Optional[int]]:
     contract = (
         db.query(Contract).filter(Contract.contract_id == data.contract_id).first()
         if data.contract_id else None
@@ -158,6 +160,15 @@ def create_lc(db: Session, data: LCCreate, created_by: int) -> Tuple[LCMaster, L
     db.refresh(lc)
     logger.info(f"LC created from contract: lc_id={lc.lc_id}, lc_number={lc.lc_number}, "
                 f"contract={data.contract_id}")
+
+    shipment_id: Optional[int] = None
+    if data.auto_create_shipment:
+        shipment, _bal = shipment_svc.create_shipment(
+            ShipmentCreate(lc_id=lc.lc_id), db, created_by=created_by,
+        )
+        shipment_id = shipment.shipment_id
+        logger.info(f"Auto-created shipment stub: shipment_id={shipment_id}, lc_id={lc.lc_id}")
+
     if warnings:
         logger.warning(f"LC {lc.lc_id} created with field warnings: {warnings}")
-    return lc, warnings
+    return lc, warnings, shipment_id

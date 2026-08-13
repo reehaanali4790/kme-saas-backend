@@ -41,6 +41,7 @@ class LCCreate(BaseModel):
     buyer_allocation: Optional[dict] = None
     staged_file: Optional[str] = None
     original_filename: Optional[str] = None
+    auto_create_shipment: bool = True
 
     @field_validator("lc_number", mode="before")
     @classmethod
@@ -73,3 +74,4 @@ class LCCreateResult(BaseModel):
     lc_id: int
     lc_number: str
     warnings: List[str] = Field(default_factory=list)
+    shipment_id: Optional[int] = None

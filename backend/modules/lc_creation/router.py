@@ -97,8 +97,9 @@ def upload_and_extract(
 @router.post("/", response_model=LCCreateResult)
 def create_lc(data: LCCreate, db: Session = Depends(get_tenant_db),
               current_user: User = Depends(require_permission("import_lc"))):
-    lc, warnings = svc.create_lc(db, data, created_by=current_user.user_id)
-    return LCCreateResult(lc_id=lc.lc_id, lc_number=lc.lc_number, warnings=warnings)
+    lc, warnings, shipment_id = svc.create_lc(db, data, created_by=current_user.user_id)
+    return LCCreateResult(lc_id=lc.lc_id, lc_number=lc.lc_number, warnings=warnings,
+                          shipment_id=shipment_id)
 
 
 @router.get("/{lc_id}/document")

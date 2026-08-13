@@ -172,43 +172,46 @@ def _nbp_daily_job():
 
 
 def _kpt_daily_job():
-    """Scheduled daily KPT crawl: Expected Arrivals (ETA) then Ships On Port."""
+    """Scheduled daily KPT crawl: Expected Arrivals (ETA) then Ships On Port — per tenant."""
     if not settings.KPT_ETA_CRAWLER_ENABLED and not settings.KPT_ON_PORT_CRAWLER_ENABLED:
         return
-    from config.database import SessionLocal
-    db = SessionLocal()
-    try:
+    from core.tenant_jobs import run_for_all_tenants
+
+    def _run(ctx, tenant_db):
         if settings.KPT_ETA_CRAWLER_ENABLED:
             from integrations.kpt.kpt_eta_sync import run_kpt_eta_sync
             res = run_kpt_eta_sync(
-                db,
+                tenant_db,
                 min_lc_age_days=settings.KPT_ETA_LC_AGE_DAYS,
                 url=settings.KPT_ETA_URL,
             )
             logger.info(
-                f"[KPT ETA scheduler] eligible={res['eligible_vessels']} matched={res['matched']} "
-                f"updated_shipments={res['updated_shipments']} not_found={len(res['not_found'])}"
+                "[%s KPT ETA] eligible=%s matched=%s updated=%s not_found=%s",
+                ctx.schema_name, res["eligible_vessels"], res["matched"],
+                res["updated_shipments"], len(res["not_found"]),
             )
         if settings.KPT_ON_PORT_CRAWLER_ENABLED:
             from integrations.kpt.kpt_on_port_sync import run_kpt_on_port_sync
             res2 = run_kpt_on_port_sync(
-                db,
+                tenant_db,
                 min_lc_age_days=settings.KPT_ETA_LC_AGE_DAYS,
                 url=settings.KPT_ON_PORT_URL,
             )
             logger.info(
-                f"[KPT on-port scheduler] eligible={res2['eligible_vessels']} matched={res2['matched']} "
-                f"updated_shipments={res2['updated_shipments']} not_found={len(res2['not_found'])}"
+                "[%s KPT on-port] eligible=%s matched=%s updated=%s not_found=%s",
+                ctx.schema_name, res2["eligible_vessels"], res2["matched"],
+                res2["updated_shipments"], len(res2["not_found"]),
             )
         if settings.KPT_DOC_ALERTS_ENABLED:
             from integrations.kpt.kpt_document_alerts import run_kpt_document_alert_scan
-            alerts = run_kpt_document_alert_scan(db)
-            db.commit()
-            logger.info(f"[KPT doc alerts] created={alerts['total_created']} resolved={alerts['total_resolved']}")
-    except Exception:
-        logger.error("[KPT scheduler] failed", exc_info=True)
-    finally:
-        db.close()
+            alerts = run_kpt_document_alert_scan(tenant_db)
+            logger.info(
+                "[%s KPT doc alerts] created=%s resolved=%s",
+                ctx.schema_name, alerts["total_created"], alerts["total_resolved"],
+            )
+
+    result = run_for_all_tenants("kpt_daily", _run)
+    logger.info("[KPT daily scheduler] tenants=%s errors=%s", result["tenants"], len(result["errors"]))
 
 
 def _alert_scan_job():
@@ -243,43 +246,44 @@ def _lme_bulletin_crawler_job():
 
 
 def _kpt_port_cycle_job():
-    """Every 6 hours: Ships On Port then Ship Departures."""
+    """Every N hours: Ships On Port then Ship Departures — per tenant."""
     if not settings.KPT_ON_PORT_CRAWLER_ENABLED and not settings.KPT_DEPARTURES_CRAWLER_ENABLED:
         return
-    from config.database import SessionLocal
-    db = SessionLocal()
-    try:
+    from core.tenant_jobs import run_for_all_tenants
+
+    def _run(ctx, tenant_db):
         if settings.KPT_ON_PORT_CRAWLER_ENABLED:
             from integrations.kpt.kpt_on_port_sync import run_kpt_on_port_sync
             res = run_kpt_on_port_sync(
-                db,
+                tenant_db,
                 min_lc_age_days=settings.KPT_ETA_LC_AGE_DAYS,
                 url=settings.KPT_ON_PORT_URL,
             )
             logger.info(
-                f"[KPT port cycle] on-port eligible={res['eligible_vessels']} matched={res['matched']} "
-                f"updated_shipments={res['updated_shipments']}"
+                "[%s KPT port cycle on-port] eligible=%s matched=%s updated=%s",
+                ctx.schema_name, res["eligible_vessels"], res["matched"], res["updated_shipments"],
             )
         if settings.KPT_DEPARTURES_CRAWLER_ENABLED:
             from integrations.kpt.kpt_departures_sync import run_kpt_departures_sync
             res2 = run_kpt_departures_sync(
-                db,
+                tenant_db,
                 min_lc_age_days=settings.KPT_ETA_LC_AGE_DAYS,
                 url=settings.KPT_DEPARTURES_URL,
             )
             logger.info(
-                f"[KPT port cycle] departures kpt_rows={res2['kpt_rows']} matched={res2['matched']} "
-                f"updated_shipments={res2['updated_shipments']}"
+                "[%s KPT port cycle departures] kpt_rows=%s matched=%s updated=%s",
+                ctx.schema_name, res2["kpt_rows"], res2["matched"], res2["updated_shipments"],
             )
         if settings.KPT_DOC_ALERTS_ENABLED:
             from integrations.kpt.kpt_document_alerts import run_kpt_document_alert_scan
-            alerts = run_kpt_document_alert_scan(db)
-            db.commit()
-            logger.info(f"[KPT port cycle doc alerts] created={alerts['total_created']} resolved={alerts['total_resolved']}")
-    except Exception:
-        logger.error("[KPT port cycle] failed", exc_info=True)
-    finally:
-        db.close()
+            alerts = run_kpt_document_alert_scan(tenant_db)
+            logger.info(
+                "[%s KPT port cycle doc alerts] created=%s resolved=%s",
+                ctx.schema_name, alerts["total_created"], alerts["total_resolved"],
+            )
+
+    result = run_for_all_tenants("kpt_port_cycle", _run)
+    logger.info("[KPT port cycle scheduler] tenants=%s errors=%s", result["tenants"], len(result["errors"]))
 
 
 # Startup event

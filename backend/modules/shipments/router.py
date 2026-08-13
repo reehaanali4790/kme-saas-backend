@@ -18,6 +18,7 @@ from modules.auth.dependencies import get_current_user
 from core.permissions import require_min_role
 from modules.lc_creation.helpers.shipment_validator import validate_shipment
 from modules.shipments import services as svc
+from modules.shipments import journey_service as journey_svc
 from modules.shipments.schemas import ShipmentCreate, ShipmentCreateResult, ShipmentUpdate
 
 logger = logging.getLogger("uvicorn")
@@ -156,6 +157,27 @@ def lc_balance(lc_id: int, db: Session = Depends(get_tenant_db),
 # ---------------------------------------------------------------------------
 # Validate (cross-document checks)
 # ---------------------------------------------------------------------------
+
+@router.get("/{shipment_id}/journey")
+def shipment_journey(shipment_id: int, db: Session = Depends(get_tenant_db),
+                     current_user: User = Depends(get_current_user)):
+    """Guided workflow steps with prerequisites, blockers, and deep links."""
+    return journey_svc.build_journey(shipment_id, db)
+
+
+@router.get("/{shipment_id}/doc-status")
+def shipment_doc_status(shipment_id: int, db: Session = Depends(get_tenant_db),
+                        current_user: User = Depends(get_current_user)):
+    """Per-document upload status, expected-by dates, and WhatsApp-critical flags."""
+    return journey_svc.build_doc_status(shipment_id, db)
+
+
+@router.get("/{shipment_id}/timeline")
+def shipment_timeline(shipment_id: int, db: Session = Depends(get_tenant_db),
+                      current_user: User = Depends(get_current_user)):
+    """All critical milestone dates for one shipment."""
+    return journey_svc.build_timeline(shipment_id, db)
+
 
 @router.post("/{shipment_id}/validate")
 def run_validation(shipment_id: int, db: Session = Depends(get_tenant_db),

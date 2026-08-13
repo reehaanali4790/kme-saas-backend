@@ -32,6 +32,12 @@ def arrivals(db: Session = Depends(get_tenant_db), current_user: User = Depends(
     return svc.arrivals(db)
 
 
+@router.get("/workflow")
+def workflow(db: Session = Depends(get_tenant_db), current_user: User = Depends(get_current_user)):
+    """In-transit shipments, customs-at-risk clocks, and LME snapshot for dashboard workflow panels."""
+    return svc.workflow_overview(db)
+
+
 @router.get("/v2/summary")
 def v2_summary(db: Session = Depends(get_tenant_db), current_user: User = Depends(get_current_user)):
     """Executive dashboard — KPIs, charts and tables for Dashboard 2."""

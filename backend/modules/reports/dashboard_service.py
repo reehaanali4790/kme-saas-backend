@@ -248,6 +248,131 @@ def arrivals(db: Session) -> dict:
     return result
 
 
+def workflow_overview(db: Session) -> dict:
+    """Dashboard workflow panels: in-transit, customs-at-risk, LME snapshot."""
+    import orjson
+    from sqlalchemy import text
+    from core.redis import redis_cache
+    from models.database_models import PriceAlert, LMEBulletin
+    from modules.shipments import journey_service as journey_svc
+    from modules.weboc.helpers.weboc_service import filing_deadline, bond_summary
+
+    schema = db.execute(text("SELECT current_schema()")).scalar() or "default"
+    cache_key = f"lme:dashboard:workflow:{schema}"
+    cached = redis_cache.get(cache_key)
+    if cached:
+        try:
+            return orjson.loads(cached)
+        except Exception:
+            pass
+
+    today = date.today()
+    eta_from = today - timedelta(days=7)
+    eta_to = today + timedelta(days=14)
+
+    ships = (
+        db.query(Shipment)
+        .filter(
+            Shipment.is_deleted.is_(False),
+            Shipment.eta.isnot(None),
+            Shipment.eta >= eta_from,
+            Shipment.eta <= eta_to,
+            Shipment.status.notin_(["DELIVERED", "PAYMENT_MADE", "ACCEPTED"]),
+        )
+        .options(
+            joinedload(Shipment.bill_of_ladings),
+            joinedload(Shipment.commercial_invoices),
+            joinedload(Shipment.packing_lists),
+            joinedload(Shipment.goods_declarations),
+            joinedload(Shipment.financial_instruments),
+        )
+        .order_by(Shipment.eta.asc())
+        .limit(12)
+        .all()
+    )
+
+    in_transit = []
+    for s in ships:
+        in_transit.append({
+            "shipment_id": s.shipment_id,
+            "shipment_ref": s.shipment_ref or f"SH-{s.shipment_id:04d}",
+            "vessel_name": s.vessel_name,
+            "eta": s.eta.isoformat(),
+            "days_to_arrival": (s.eta - today).days,
+            "completeness_pct": journey_svc.completeness_pct_light(s, db),
+            "href": f"/shipment?id={s.shipment_id}",
+        })
+
+    customs_at_risk = []
+    gds = (
+        db.query(GoodsDeclaration)
+        .options(joinedload(GoodsDeclaration.shipment))
+        .filter(GoodsDeclaration.eta.isnot(None))
+        .all()
+    )
+    for gd in gds:
+        s = gd.shipment
+        if not s or s.is_deleted:
+            continue
+        fd = filing_deadline(gd, today)
+        if fd.get("state") in ("DUE_SOON", "OVERDUE") and fd.get("deadline"):
+            dl = date.fromisoformat(str(fd["deadline"])[:10])
+            days = (dl - today).days
+            customs_at_risk.append({
+                "shipment_id": gd.shipment_id,
+                "gd_number": gd.gd_number,
+                "risk_type": "GD_FILING",
+                "label": "GD filing deadline",
+                "deadline": dl.isoformat(),
+                "days_remaining": days,
+                "tone": "overdue" if days < 0 else "due",
+                "href": f"/shipment?id={gd.shipment_id}&tab=customs",
+            })
+        bond = bond_summary(gd, db, today)
+        if bond.get("applies") and bond.get("deadline") and not bond.get("is_weight_settled"):
+            dl = date.fromisoformat(str(bond["deadline"])[:10])
+            days = (dl - today).days
+            if days <= 30:
+                customs_at_risk.append({
+                    "shipment_id": gd.shipment_id,
+                    "gd_number": gd.gd_number,
+                    "risk_type": "INTO_BOND",
+                    "label": "Into-bond 180-day clock",
+                    "deadline": dl.isoformat(),
+                    "days_remaining": days,
+                    "tone": "overdue" if days < 0 else ("due" if days <= 20 else "ok"),
+                    "href": f"/shipment?id={gd.shipment_id}&tab=customs",
+                })
+
+    customs_at_risk.sort(key=lambda x: x["days_remaining"])
+
+    latest_bulletin = (
+        db.query(LMEBulletin.bulletin_date)
+        .order_by(LMEBulletin.bulletin_date.desc())
+        .limit(1)
+        .scalar()
+    )
+    open_alerts = db.query(PriceAlert).filter(PriceAlert.viewed.is_(False)).count()
+
+    result = {
+        "in_transit": in_transit,
+        "customs_at_risk": customs_at_risk[:10],
+        "lme_snapshot": {
+            "latest_bulletin_date": latest_bulletin.isoformat() if latest_bulletin else None,
+            "open_lc_alerts": open_alerts,
+            "rates_href": "/lme-rates",
+            "alerts_href": "/alerts",
+        },
+    }
+
+    try:
+        redis_cache.set(cache_key, orjson.dumps(result).decode("utf-8"), ex=300)
+    except Exception:
+        pass
+
+    return result
+
+
 # Register SQLAlchemy event listeners for automatic dashboard cache invalidation
 def invalidate_dashboard_cache():
     print("\n--- CACHE INVALIDATE TRIGGERED ---")
@@ -256,6 +381,7 @@ def invalidate_dashboard_cache():
         redis_cache.delete("lme:dashboard:summary")
         redis_cache.delete("lme:dashboard:arrivals")
         redis_cache.delete("lme:dashboard:v2:summary")
+        # workflow keys are schema-scoped; best-effort delete via pattern not available — TTL is 5m
     except Exception:
         pass
 
