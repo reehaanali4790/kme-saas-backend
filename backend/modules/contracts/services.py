@@ -22,6 +22,33 @@ UPLOAD_DIR = os.path.join(settings.UPLOAD_DIR, "contract_documents")
 STAGE_DIR = os.path.join(UPLOAD_DIR, "_staged")
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
 
+# Column max lengths for String fields — AI extraction often exceeds these and
+# Postgres then raises StringDataRightTruncation → opaque 500 on save.
+_FIELD_MAX_LEN = {
+    "contract_number": 50,
+    "supplier_name": 300,
+    "buyer_name": 300,
+    "indentor_name": 300,
+    "currency": 10,
+    "delivery_terms": 120,
+    "country_of_origin": 100,
+    "buyer_ntn": 20,
+    "port_of_loading": 200,
+    "shipping_mark": 100,
+    "hs_code": 50,
+    "beneficiary_bank": 200,
+    "beneficiary_swift": 20,
+    "beneficiary_account": 50,
+    "bank_name": 200,
+}
+
+
+def _clip(value, max_len: int):
+    if value is None:
+        return None
+    s = str(value)
+    return s if len(s) <= max_len else s[:max_len]
+
 
 def safe_remove(path: Optional[str]) -> None:
     if path and os.path.exists(path):
@@ -41,7 +68,8 @@ def apply_fields(c: Contract, data: ContractSave) -> None:
     ):
         value = getattr(data, field)
         if value is not None:
-            setattr(c, field, value)
+            max_len = _FIELD_MAX_LEN.get(field)
+            setattr(c, field, _clip(value, max_len) if max_len else value)
     for field in ("contract_date", "valid_to"):
         value = getattr(data, field)
         if value is not None:
@@ -294,13 +322,22 @@ def save_contract(db: Session, data: ContractSave, created_by: int) -> Contract:
     apply_items(c, data.line_items, db)
     normalize_contract_parties(c, db)
     if is_new and data.staged_file:
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
         stage_path = os.path.join(STAGE_DIR, os.path.basename(data.staged_file))
         if os.path.exists(stage_path):
             orig = data.original_filename or ("contract" + Path(stage_path).suffix)
-            dest = safe_upload_path(UPLOAD_DIR, c.contract_id, orig, ALLOWED_EXTENSIONS)
-            os.replace(stage_path, dest)
-            c.document_filename = orig
-            c.document_path = dest
+            try:
+                dest = safe_upload_path(UPLOAD_DIR, c.contract_id, orig, ALLOWED_EXTENSIONS)
+                os.replace(stage_path, dest)
+                c.document_filename = orig
+                c.document_path = dest
+            except (OSError, ValueError) as exc:
+                # Don't fail the whole save if the PDF can't be moved — contract row still matters.
+                import logging
+                logging.getLogger("uvicorn").error(
+                    "Contract %s: failed to persist staged document %s: %s",
+                    c.contract_id, stage_path, exc,
+                )
         c.raw_extracted_data = data.raw_extracted_data
     # Contract sent to bank at upload/first-save time (only stamp once).
     if c.sent_to_bank_at is None:

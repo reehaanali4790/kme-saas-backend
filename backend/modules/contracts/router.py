@@ -111,7 +111,20 @@ def _contract_upload_inner(lc_id, file, ext):
 @router.post("/", response_model=SaveResult)
 def save_contract(data: ContractSave, db: Session = Depends(get_tenant_db),
                   current_user: User = Depends(_can_write)):
-    c = svc.save_contract(db, data, created_by=current_user.user_id)
+    try:
+        c = svc.save_contract(db, data, created_by=current_user.user_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Contract save failed: %s: %s (contract_number=%s staged=%s)",
+            type(e).__name__, e, data.contract_number, data.staged_file,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not save contract: {type(e).__name__}: {e}",
+        ) from e
     logger.info(f"Contract saved: id={c.contract_id}, number={c.contract_number}, status={c.status}")
     return SaveResult(contract_id=c.contract_id)
 
