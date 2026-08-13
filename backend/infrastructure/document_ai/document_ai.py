@@ -548,20 +548,33 @@ def extract_with_tiers(
     model: str = DEFAULT_MODEL,
 ) -> dict:
     """Convenience wrapper — reads tier flags from settings. This is the entry point
-    extractors should call instead of extract_with_claude() directly."""
-    from config.settings import settings
+    extractors should call instead of extract_with_claude() directly.
 
-    return extract_document(
-        file_path,
-        prompt,
-        api_key,
-        doc_type=doc_type,
-        model=model,
-        max_tokens=max_tokens,
-        max_pages=max_pages,
-        gemini_api_key=settings.GEMINI_API_KEY,
-        text_parser_enabled=settings.EXTRACTION_TEXT_PARSER_ENABLED,
-        gemini_enabled=settings.EXTRACTION_GEMINI_ENABLED,
-        claude_fallback=settings.EXTRACTION_CLAUDE_FALLBACK,
-        text_min_confidence=settings.EXTRACTION_TEXT_MIN_CONFIDENCE,
-    )
+    Also records a real AI usage event (+ api_calls) for the current metering org.
+    """
+    from config.settings import settings
+    from core.platform_metering import meter_extraction
+
+    try:
+        data = extract_document(
+            file_path,
+            prompt,
+            api_key,
+            doc_type=doc_type,
+            model=model,
+            max_tokens=max_tokens,
+            max_pages=max_pages,
+            gemini_api_key=settings.GEMINI_API_KEY,
+            text_parser_enabled=settings.EXTRACTION_TEXT_PARSER_ENABLED,
+            gemini_enabled=settings.EXTRACTION_GEMINI_ENABLED,
+            claude_fallback=settings.EXTRACTION_CLAUDE_FALLBACK,
+            text_min_confidence=settings.EXTRACTION_TEXT_MIN_CONFIDENCE,
+        )
+        method = None
+        if isinstance(data, dict):
+            method = data.get("_extraction_method")
+        meter_extraction(doc_type=doc_type, success=True, model=str(method) if method else None)
+        return data
+    except Exception:
+        meter_extraction(doc_type=doc_type, success=False, model=None)
+        raise

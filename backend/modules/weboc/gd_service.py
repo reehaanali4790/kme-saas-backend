@@ -19,6 +19,7 @@ from models.database_models import GDAttachment, GDItem, GoodsDeclaration, Shipm
 from modules.weboc.gd_schemas import GDItemIn, GDSave, LevyIn
 from infrastructure.normalization.normalization_service import normalize_goods_declaration
 from utils.uploads import safe_upload_path
+from core.platform_metering import enforce_document_quota, meter_document_accepted
 
 UPLOAD_DIR = os.path.join(settings.UPLOAD_DIR, "gd_documents")
 ATTACH_DIR = os.path.join(settings.UPLOAD_DIR, "gd_attachments")
@@ -411,6 +412,7 @@ def list_attachments(gd_id: int, kind: Optional[str], db: Session) -> List[GDAtt
 def add_attachment(gd_id: int, kind: str, file: UploadFile, user_id: int, db: Session) -> dict:
     from core.exceptions import ValidationError
 
+    enforce_document_quota()
     gd = get_gd_or_404(gd_id, db)
     kind = kind.upper()
     if kind not in ATTACH_KINDS:
@@ -436,6 +438,7 @@ def add_attachment(gd_id: int, kind: str, file: UploadFile, user_id: int, db: Se
 
     db.commit()
     db.refresh(att)
+    meter_document_accepted(file_path=att.file_path)
     out = attachment_to_dict(att)
     out["gd_status"] = gd.status
     out["status_changed"] = status_changed

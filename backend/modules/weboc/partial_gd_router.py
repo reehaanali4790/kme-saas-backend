@@ -21,6 +21,7 @@ from models.database_models import User
 from modules.auth.dependencies import get_current_user
 from core.permissions import require_min_role
 from infrastructure.document_ai.document_ai import safe_extract
+from core.platform_metering import enforce_document_quota, meter_document_accepted
 from modules.weboc.extractors.gd_view_extractor_service import extract_gd_view
 from modules.weboc.extractors.item_details_extractor_service import extract_item_details
 from modules.weboc.gd_service import ALLOWED_EXTENSIONS
@@ -42,6 +43,7 @@ def _check_ext(file: UploadFile) -> tuple[str, str]:
         raise HTTPException(status_code=400, detail=f"Only JPG, PNG, PDF supported. Got: {ext}")
     if not settings.ANTHROPIC_API_KEY:
         raise HTTPException(status_code=503, detail="AI extraction is not set up on this server. Please contact support, or enter the details manually.")
+    enforce_document_quota()
     return ext, file.filename
 
 
@@ -68,6 +70,7 @@ async def partial_gd_view_upload_and_extract(
     file_contents = await file.read()
     att = pgd.replace_entry_attachment(entry, "EX_BOND_GD_VIEW", filename, file_contents, db, current_user.user_id)
     db.commit()
+    meter_document_accepted(file_path=att.file_path)
 
     extracted, extraction_error = safe_extract(
         extract_gd_view, att.file_path, settings.ANTHROPIC_API_KEY,
@@ -119,6 +122,7 @@ async def partial_gd_item_details_upload_and_extract(
     # (single, replace-semantics) Item Details.
     att = pgd.add_entry_attachment(entry, "EX_BOND_ITEM_DETAILS", filename, file_contents, db, current_user.user_id)
     db.commit()
+    meter_document_accepted(file_path=att.file_path)
 
     extracted, extraction_error = safe_extract(
         extract_item_details, att.file_path, settings.ANTHROPIC_API_KEY,

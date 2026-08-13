@@ -18,6 +18,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.tenant import get_tenant_db
+from core.platform_metering import enforce_document_quota, meter_document_accepted
 from config.settings import settings
 from models.database_models import ShipmentDocument, Shipment, User
 from modules.auth.dependencies import get_current_user
@@ -71,6 +72,8 @@ def upload_shipment_doc(
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Only JPG, PNG, PDF supported. Got: {ext}")
 
+    enforce_document_quota()
+
     shipment = db.query(Shipment).filter(Shipment.shipment_id == shipment_id).first()
     if not shipment:
         raise HTTPException(status_code=404, detail="Shipment not found")
@@ -110,6 +113,7 @@ def upload_shipment_doc(
                  "REPLACE" if replacing else "UPLOAD", doc_type=doc_name)
     db.commit()
     db.refresh(doc)
+    meter_document_accepted(file_path=doc.document_path)
     return _to_dict(doc)
 
 

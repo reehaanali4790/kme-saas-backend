@@ -18,6 +18,7 @@ from core.permissions import require_min_role
 from models.database_models import InsuranceCertificate, Shipment, User
 from modules.auth.dependencies import get_current_user
 from infrastructure.document_ai.document_ai import safe_extract
+from core.platform_metering import enforce_document_quota, meter_document_accepted
 from modules.documents.extractors.insurance_extractor import extract_insurance
 from infrastructure.activity.activity_service import log_activity
 from modules.documents import insurance_service as svc
@@ -49,6 +50,8 @@ def upload_and_extract(
     if not settings.ANTHROPIC_API_KEY:
         raise HTTPException(status_code=503, detail="AI extraction is not set up on this server. Please contact support, or enter the details manually.")
 
+    enforce_document_quota()
+
     shipment = db.query(Shipment).filter(Shipment.shipment_id == shipment_id).first()
     if not shipment:
         raise HTTPException(status_code=404, detail="Shipment not found")
@@ -72,6 +75,7 @@ def upload_and_extract(
     ins.document_path = svc.save_file(file, ins.insurance_id)
     ins.document_filename = file.filename
     db.commit()
+    meter_document_accepted(file_path=ins.document_path)
 
     extracted, extraction_error = safe_extract(
         extract_insurance, ins.document_path, settings.ANTHROPIC_API_KEY,

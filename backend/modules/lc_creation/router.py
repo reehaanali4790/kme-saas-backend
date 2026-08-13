@@ -20,6 +20,7 @@ from core.permissions import require_permission
 from modules.lc_creation.extractors.lc_extractor import extract_lc
 from modules.lc_creation.helpers.shipment_validator import cross_check_lc_vs_contract
 from infrastructure.document_ai.document_ai import ExtractionError
+from core.platform_metering import enforce_document_quota, meter_document_accepted
 from . import services as svc
 from .schemas import LCCreate, LCCreateResult
 
@@ -55,6 +56,8 @@ def upload_and_extract(
     if not settings.ANTHROPIC_API_KEY:
         raise HTTPException(status_code=503, detail="AI extraction is not set up on this server. Please contact support, or enter the details manually.")
 
+    enforce_document_quota()
+
     contract = None
     if contract_id:
         contract = db.query(Contract).filter(Contract.contract_id == contract_id).first()
@@ -89,6 +92,7 @@ def upload_and_extract(
                            f"Check the extracted fields below before creating the LC.")
     if warnings:
         logger.warning(f"LC cross-check vs contract {contract_id}: {warnings}")
+    meter_document_accepted(file_path=path)
     return {"staged_file": staged, "original_filename": file.filename,
             "is_pdf": ext == ".pdf", "extracted": extracted, "warnings": warnings,
             "contract_id": contract_id}

@@ -293,6 +293,18 @@ def build_ai_overview(db: Session) -> dict[str, Any]:
         .group_by(AiUsageEvent.organization_id)
         .all()
     )
+    by_doc_rows = (
+        db.query(AiUsageEvent.doc_type, func.count(AiUsageEvent.event_id))
+        .filter(AiUsageEvent.created_at >= period_dt)
+        .group_by(AiUsageEvent.doc_type)
+        .all()
+    )
+    by_event_rows = (
+        db.query(AiUsageEvent.event_type, func.count(AiUsageEvent.event_id))
+        .filter(AiUsageEvent.created_at >= period_dt)
+        .group_by(AiUsageEvent.event_type)
+        .all()
+    )
     org_ids = [oid for oid, _ in by_org_rows if oid]
     orgs = {
         o.organization_id: o
@@ -309,6 +321,18 @@ def build_ai_overview(db: Session) -> dict[str, Any]:
     ]
     by_org.sort(key=lambda x: x["events"], reverse=True)
 
+    by_doc_type = [
+        {"doc_type": dt or "unknown", "events": int(cnt)}
+        for dt, cnt in by_doc_rows
+    ]
+    by_doc_type.sort(key=lambda x: x["events"], reverse=True)
+
+    by_event_type = [
+        {"event_type": et or "unknown", "events": int(cnt)}
+        for et, cnt in by_event_rows
+    ]
+    by_event_type.sort(key=lambda x: x["events"], reverse=True)
+
     return {
         "gemini_configured": bool(settings.GEMINI_API_KEY),
         "anthropic_configured": bool(settings.ANTHROPIC_API_KEY),
@@ -320,6 +344,8 @@ def build_ai_overview(db: Session) -> dict[str, Any]:
         "success_this_month": success,
         "failed_this_month": total - success,
         "by_organization": by_org,
+        "by_doc_type": by_doc_type,
+        "by_event_type": by_event_type,
     }
 
 

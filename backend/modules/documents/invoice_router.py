@@ -19,6 +19,7 @@ from models.database_models import CommercialInvoice, InvoiceLineItem, Shipment,
 from modules.auth.dependencies import get_current_user
 from infrastructure.activity.activity_service import log_activity
 from infrastructure.document_ai.document_ai import safe_extract
+from core.platform_metering import enforce_document_quota, meter_document_accepted
 from modules.documents.extractors.invoice_extractor import extract_invoice
 from modules.documents import invoice_service as svc
 from modules.documents.invoice_schemas import InvoiceSave
@@ -47,6 +48,8 @@ def upload_and_extract(
     if not settings.ANTHROPIC_API_KEY:
         raise HTTPException(status_code=503, detail="AI extraction is not set up on this server. Please contact support, or enter the details manually.")
 
+    enforce_document_quota()
+
     shipment = db.query(Shipment).filter(Shipment.shipment_id == shipment_id).first()
     if not shipment:
         raise HTTPException(status_code=404, detail="Shipment not found")
@@ -71,6 +74,7 @@ def upload_and_extract(
     inv.document_path = svc.save_file(file, inv.invoice_id)
     inv.document_filename = file.filename
     db.commit()
+    meter_document_accepted(file_path=inv.document_path)
 
     extracted, extraction_error = safe_extract(
         extract_invoice, inv.document_path, settings.ANTHROPIC_API_KEY,

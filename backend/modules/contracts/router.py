@@ -11,7 +11,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from core.tenant import get_tenant_db
+from core.tenant import get_tenant_db, get_tenant_context, TenantContext
+from core.platform_metering import (
+    enforce_document_quota,
+    meter_document_accepted,
+    set_metering_org,
+    clear_metering_org,
+)
 from config.settings import settings
 from models.database_models import User
 from modules.auth.dependencies import get_current_user
@@ -42,6 +48,7 @@ def upload_and_extract(
     lc_id: int = Query(None),
     file: UploadFile = File(...),
     current_user: User = Depends(_can_write),
+    tenant: TenantContext = Depends(get_tenant_context),
 ):
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
@@ -51,6 +58,15 @@ def upload_and_extract(
     if not settings.ANTHROPIC_API_KEY:
         raise HTTPException(status_code=503, detail="AI extraction is not set up on this server. Please contact support, or enter the details manually.")
 
+    enforce_document_quota(tenant.organization_id)
+    set_metering_org(tenant.organization_id)
+    try:
+        return _contract_upload_inner(lc_id, file, ext)
+    finally:
+        clear_metering_org()
+
+
+def _contract_upload_inner(lc_id, file, ext):
     # Stage the file and verify it's actually a contract. Nothing is written to the
     # database here — extraction attempts (retries, abandoned uploads, navigating away)
     # must not leave permanent DRAFT rows behind. The contract is only created when the
@@ -84,6 +100,7 @@ def upload_and_extract(
                             detail=f"This file does not look like a contract — it appears to be {detected}. "
                                    f"Please upload a supplier purchase / sales contract.")
 
+    meter_document_accepted(file_path=stage_path)
     return {"staged_file": staged, "original_filename": file.filename,
             "is_pdf": ext == ".pdf", "extracted": extracted, "lc_id": lc_id}
 

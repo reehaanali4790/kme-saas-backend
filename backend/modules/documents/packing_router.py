@@ -18,6 +18,7 @@ from models.database_models import PackingList, PackingLineItem, Shipment, User
 from modules.auth.dependencies import get_current_user
 from infrastructure.activity.activity_service import log_activity
 from infrastructure.document_ai.document_ai import safe_extract
+from core.platform_metering import enforce_document_quota, meter_document_accepted
 from modules.documents.extractors.packing_extractor import extract_packing
 from modules.documents import packing_service as svc
 from modules.documents.packing_schemas import PackingSave
@@ -46,6 +47,8 @@ def upload_and_extract(
     if not settings.ANTHROPIC_API_KEY:
         raise HTTPException(status_code=503, detail="AI extraction is not set up on this server. Please contact support, or enter the details manually.")
 
+    enforce_document_quota()
+
     shipment = db.query(Shipment).filter(Shipment.shipment_id == shipment_id).first()
     if not shipment:
         raise HTTPException(status_code=404, detail="Shipment not found")
@@ -68,6 +71,7 @@ def upload_and_extract(
     p.document_path = svc.save_file(file, p.packing_id)
     p.document_filename = file.filename
     db.commit()
+    meter_document_accepted(file_path=p.document_path)
 
     extracted, extraction_error = safe_extract(
         extract_packing, p.document_path, settings.ANTHROPIC_API_KEY,

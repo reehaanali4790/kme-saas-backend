@@ -120,12 +120,16 @@ async def get_tenant_context(
 def get_tenant_db(
     tenant: TenantContext = Depends(get_tenant_context),
 ) -> Generator[Session, None, None]:
+    from core.platform_metering import clear_metering_org, set_metering_org
+
+    set_metering_org(tenant.organization_id)
     db = SessionLocal()
     try:
         set_tenant_search_path(db, tenant.schema_name)
         yield db
     finally:
         db.close()
+        clear_metering_org()
 
 
 def list_active_tenant_contexts(db: Session) -> list[TenantContext]:

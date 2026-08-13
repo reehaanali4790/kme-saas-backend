@@ -21,6 +21,7 @@ from modules.weboc.gd_service import (
 from core.permissions import require_min_role
 from core.exceptions import NotFoundError
 from infrastructure.document_ai.document_ai import safe_extract
+from core.platform_metering import enforce_document_quota, meter_document_accepted
 from modules.weboc.extractors.gd_view_extractor_service import extract_gd_view
 from modules.weboc.extractors.item_details_extractor_service import extract_item_details
 from modules.weboc.extractors.gd_extractor_service import extract_gd
@@ -53,6 +54,7 @@ def _check_ext(file: UploadFile) -> tuple[str, str]:
         raise HTTPException(status_code=400, detail=f"Only JPG, PNG, PDF supported. Got: {ext}")
     if not settings.ANTHROPIC_API_KEY:
         raise HTTPException(status_code=503, detail="AI extraction is not set up on this server. Please contact support, or enter the details manually.")
+    enforce_document_quota()
     return ext, file.filename
 
 
@@ -72,6 +74,7 @@ async def gd_view_upload_and_extract(
     file_contents = await file.read()
     att = svc.replace_gd_attachment(gd, "GD_VIEW", filename, file_contents, db, current_user.user_id)
     db.commit()
+    meter_document_accepted(file_path=att.file_path)
 
     extracted, extraction_error = safe_extract(
         extract_gd_view, att.file_path, settings.ANTHROPIC_API_KEY,
@@ -142,6 +145,7 @@ async def item_details_upload_and_extract(
     file_contents = await file.read()
     att = svc.replace_gd_attachment(gd, "ITEM_DETAILS", filename, file_contents, db, current_user.user_id)
     db.commit()
+    meter_document_accepted(file_path=att.file_path)
 
     extracted, extraction_error = safe_extract(
         extract_item_details, att.file_path, settings.ANTHROPIC_API_KEY,
@@ -451,6 +455,7 @@ async def into_bond_gd_upload_and_extract(
     file_contents = await file.read()
     att = svc.replace_gd_attachment(gd, "INTO_BOND_GD", filename, file_contents, db, current_user.user_id)
     db.commit()
+    meter_document_accepted(file_path=att.file_path)
 
     extracted, extraction_error = safe_extract(
         extract_gd, att.file_path, settings.ANTHROPIC_API_KEY,
@@ -535,6 +540,7 @@ async def ex_bond_gd_upload_and_extract(
     file_contents = await file.read()
     att = svc.add_gd_attachment(gd, "EX_BOND_GD", filename, file_contents, db, current_user.user_id)
     db.commit()
+    meter_document_accepted(file_path=att.file_path)
 
     extracted, extraction_error = safe_extract(
         extract_gd, att.file_path, settings.ANTHROPIC_API_KEY,
