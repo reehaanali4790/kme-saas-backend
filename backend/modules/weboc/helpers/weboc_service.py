@@ -63,19 +63,17 @@ def _d_pos(v):
     return d if d > 0 else None
 
 
+from infrastructure.normalization.smart_match import names_equivalent
+
+
 def _norm(s):
     s = re.sub(r"[^A-Za-z0-9]+", " ", str(s or "")).strip().upper()
     return re.sub(r"\s+", " ", s)
 
 
-def _lenient_match(a, b):
-    """Case/punctuation-insensitive containment match. None when either side is empty."""
-    if not a or not b:
-        return None
-    a, b = _norm(a), _norm(b)
-    if not a or not b:
-        return None
-    return a == b or a in b or b in a
+def _lenient_match(a, b, kind: str = "generic"):
+    """Case/punctuation-insensitive smart match. None when either side is empty."""
+    return names_equivalent(a, b, kind=kind)  # type: ignore[arg-type]
 
 
 def _norm_hs(code):
@@ -537,13 +535,13 @@ def cross_check_gd_view(extracted: dict, shipment_id: int, db: Session) -> list:
     # BL number vs the shipment's BL
     gd_bl = e.get("bl_number")
     ship_bl = (bl.bl_number if bl else None) or (lc.bl_number if lc else None)
-    if gd_bl and ship_bl and _lenient_match(gd_bl, ship_bl) is False:
+    if gd_bl and ship_bl and _lenient_match(gd_bl, ship_bl, "reference") is False:
         warnings.append(f"GD View B/L number '{gd_bl}' does not match the shipment's "
                         f"Bill of Lading '{ship_bl}'.")
 
     # Importer / company vs the LC
     gd_imp = e.get("importer_name")
-    if gd_imp and lc and lc.importer_name and _lenient_match(gd_imp, lc.importer_name) is False:
+    if gd_imp and lc and lc.importer_name and _lenient_match(gd_imp, lc.importer_name, "company") is False:
         warnings.append(f"GD View importer '{gd_imp}' does not match the LC's importer "
                         f"'{lc.importer_name}'.")
 
@@ -600,7 +598,7 @@ def cross_check_item_details(extracted: dict, shipment_id: int, db: Session) -> 
 
     # Company vs the LC
     if e.get("importer_name") and lc and lc.importer_name and \
-            _lenient_match(e["importer_name"], lc.importer_name) is False:
+            _lenient_match(e["importer_name"], lc.importer_name, "company") is False:
         warnings.append(f"Item Details importer '{e['importer_name']}' does not match the LC's "
                         f"importer '{lc.importer_name}'.")
 

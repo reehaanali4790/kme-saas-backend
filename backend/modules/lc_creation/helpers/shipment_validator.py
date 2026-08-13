@@ -13,6 +13,8 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
+from infrastructure.normalization.smart_match import names_equivalent
+
 from models.database_models import (
     Shipment, BillOfLading, CommercialInvoice, PackingList,
     LCMaster, LCProduct, DocumentValidation, FinancialInstrument,
@@ -71,19 +73,10 @@ def _weights_match(values):
     return (max(present) - min(present)) <= WEIGHT_TOLERANCE_MT
 
 
-def _lenient_match(a, b):
-    """Lenient reference match — case-insensitive, punctuation-insensitive, passes if
-    either contains the other (so 'TIANJIN PORT, CHINA' == 'TIANJIN PORT CHINA').
+def _lenient_match(a, b, kind: str = "generic"):
+    """Lenient reference match — delegates to smart fuzzy matcher.
     Returns None when either side is empty."""
-    if not a or not b:
-        return None
-    def norm(s):
-        s = re.sub(r"[^A-Za-z0-9]+", " ", str(s)).strip().upper()
-        return re.sub(r"\s+", " ", s)
-    a, b = norm(a), norm(b)
-    if not a or not b:
-        return None
-    return a == b or a in b or b in a
+    return names_equivalent(a, b, kind=kind)  # type: ignore[arg-type]
 
 
 def _num_lead(v):
@@ -107,13 +100,13 @@ def cross_check_lc_vs_contract(extracted: dict, contract_id: int, db: Session) -
     w: list[str] = []
 
     ref = e.get("contract_reference")
-    if ref and c.contract_number and _lenient_match(ref, c.contract_number) is False:
+    if ref and c.contract_number and _lenient_match(ref, c.contract_number, "reference") is False:
         w.append(f"LC's referenced contract '{ref}' does not match this contract '{c.contract_number}'.")
-    if e.get("beneficiary_name") and c.supplier_name and _lenient_match(e["beneficiary_name"], c.supplier_name) is False:
+    if e.get("beneficiary_name") and c.supplier_name and _lenient_match(e["beneficiary_name"], c.supplier_name, "company") is False:
         w.append(f"LC beneficiary '{e['beneficiary_name']}' differs from contract supplier '{c.supplier_name}'.")
-    if e.get("applicant_name") and c.buyer_name and _lenient_match(e["applicant_name"], c.buyer_name) is False:
+    if e.get("applicant_name") and c.buyer_name and _lenient_match(e["applicant_name"], c.buyer_name, "company") is False:
         w.append(f"LC applicant '{e['applicant_name']}' differs from contract importer '{c.buyer_name}'.")
-    if e.get("currency") and c.currency and _lenient_match(e["currency"], c.currency) is False:
+    if e.get("currency") and c.currency and _lenient_match(e["currency"], c.currency, "generic") is False:
         w.append(f"LC currency '{e['currency']}' differs from contract currency '{c.currency}'.")
 
     lc_qty = _num_lead(e.get("quantity_mt"))
@@ -126,7 +119,7 @@ def cross_check_lc_vs_contract(extracted: dict, contract_id: int, db: Session) -
     if lc_price and c_price and abs(lc_price - c_price) > 0.01:
         w.append(f"LC unit price {lc_price} differs from contract price {c_price} per MT.")
 
-    if e.get("port_of_loading") and c.port_of_loading and _lenient_match(e["port_of_loading"], c.port_of_loading) is False:
+    if e.get("port_of_loading") and c.port_of_loading and _lenient_match(e["port_of_loading"], c.port_of_loading, "location") is False:
         w.append(f"LC port of loading '{e['port_of_loading']}' differs from contract '{c.port_of_loading}'.")
 
     return w
