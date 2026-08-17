@@ -222,6 +222,10 @@ class Settings(BaseSettings):
     PLATFORM_ADMIN_USERNAME: str = "platform-owner"
     PLATFORM_ADMIN_PASSWORD: Optional[str] = None
     PLATFORM_ADMIN_FULL_NAME: str = "Platform Owner"
+    # Observability (optional)
+    SENTRY_DSN: Optional[str] = None
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.1
+
     SIGNUP_RATE_LIMIT: str = "5/minute"
     DEFAULT_TRIAL_DAYS: int = 14
     

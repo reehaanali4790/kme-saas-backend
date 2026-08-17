@@ -52,9 +52,14 @@ def _tenant_context_from_payload(payload: dict, db: Session) -> Optional[TenantC
     set_platform_search_path(db)
     org = db.query(Organization).filter(
         Organization.organization_id == int(org_id),
-        Organization.status.in_(("active", "trial", "pending")),
     ).first()
     if not org or org.schema_name != tenant_schema:
+        return None
+
+    from core.org_access import assert_org_accessible
+    try:
+        assert_org_accessible(org)
+    except HTTPException:
         return None
 
     plan_slug = payload.get("plan_slug")
@@ -112,6 +117,8 @@ async def get_tenant_context(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not a member of this organization",
             )
+        from core.tenant_upload import set_current_tenant_schema
+        set_current_tenant_schema(ctx.schema_name)
         return ctx
     finally:
         db.close()
@@ -121,8 +128,10 @@ def get_tenant_db(
     tenant: TenantContext = Depends(get_tenant_context),
 ) -> Generator[Session, None, None]:
     from core.platform_metering import clear_metering_org, set_metering_org
+    from core.tenant_upload import reset_current_tenant_schema, set_current_tenant_schema
 
     set_metering_org(tenant.organization_id)
+    schema_token = set_current_tenant_schema(tenant.schema_name)
     db = SessionLocal()
     try:
         set_tenant_search_path(db, tenant.schema_name)
@@ -130,6 +139,7 @@ def get_tenant_db(
     finally:
         db.close()
         clear_metering_org()
+        reset_current_tenant_schema(schema_token)
 
 
 def get_default_tenant_db() -> Generator[Session, None, None]:

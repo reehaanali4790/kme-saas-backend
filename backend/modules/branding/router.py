@@ -12,14 +12,14 @@ import os
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from core.tenant import get_tenant_db, get_default_tenant_db
+from core.tenant import get_tenant_db, get_tenant_context, TenantContext
 from config.settings import settings
 from core.permissions import require_permission
 from infrastructure.documents.document_files import document_file_response
 from models.database_models import User
 from modules.branding import service as svc
 from modules.branding.schemas import BrandingConfigOut, BrandingConfigUpdate
-from utils.uploads import safe_upload_path
+from utils.uploads import safe_upload_path, tenant_doc_dir
 
 logger = logging.getLogger("uvicorn")
 
@@ -27,7 +27,7 @@ router = APIRouter(prefix="/api/branding", tags=["Branding"])
 
 _require_admin = require_permission("manage_users")
 
-BRANDING_UPLOAD_DIR = os.path.join(settings.UPLOAD_DIR, "branding")
+BRANDING_SUBDIR = "branding"
 ALLOWED_LOGO_EXTENSIONS = {".png", ".svg", ".webp"}
 MAX_LOGO_SIZE = 2 * 1024 * 1024  # 2 MB
 
@@ -61,6 +61,7 @@ def update_branding(
 async def upload_logo(
     file: UploadFile = File(...),
     db: Session = Depends(get_tenant_db),
+    tenant: TenantContext = Depends(get_tenant_context),
     current_user: User = Depends(_require_admin),
 ):
     """Upload a new logo. Transparent-background PNG/SVG/WEBP recommended — the logo
@@ -77,8 +78,8 @@ async def upload_logo(
     if len(contents) > MAX_LOGO_SIZE:
         raise HTTPException(status_code=413, detail="Logo must be 2 MB or smaller.")
 
-    os.makedirs(BRANDING_UPLOAD_DIR, exist_ok=True)
-    dest = safe_upload_path(BRANDING_UPLOAD_DIR, "logo", file.filename, ALLOWED_LOGO_EXTENSIONS)
+    branding_dir = tenant_doc_dir(tenant.schema_name, BRANDING_SUBDIR)
+    dest = safe_upload_path(branding_dir, "logo", file.filename, ALLOWED_LOGO_EXTENSIONS)
     with open(dest, "wb") as f:
         f.write(contents)
 

@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lme_monitoring_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r ../requirements.txt pytest
+      - name: Run pytest
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/lme_monitoring_test
+          SKIP_PRODUCTION_CHECKS: "true"
+          ENABLE_SCHEDULER: "false"
+        run: pytest tests/ -q --tb=short
+      - name: Docker build smoke
+        run: docker build -f ../Dockerfile ..

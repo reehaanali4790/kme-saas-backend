@@ -1,6 +1,7 @@
 """Stripe billing and self-serve signup."""
 
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr
@@ -8,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from config.database import get_platform_db
 from config.settings import settings
+from core.rate_limit import limiter
 from core.tenant import get_tenant_context, TenantContext
 from models.platform_models import Organization, Plan, Subscription, StripeEvent, UsageCounter, User
 from modules.auth.dependencies import get_current_user
@@ -37,8 +39,20 @@ class SignupRequest(BaseModel):
     admin_full_name: str
 
 
+def _pending_signup_payload(body: SignupRequest) -> dict:
+    return {
+        "admin_username": body.admin_username,
+        "admin_email": str(body.admin_email),
+        "admin_full_name": body.admin_full_name,
+        "admin_password_hash": AuthService.hash_password(body.admin_password),
+        "plan_slug": body.plan_slug,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+
 @router.post("/api/signup")
-def signup(body: SignupRequest, db: Session = Depends(get_platform_db)):
+@limiter.limit(settings.SIGNUP_RATE_LIMIT)
+def signup(body: SignupRequest, request: Request, db: Session = Depends(get_platform_db)):
     slug = validate_slug(body.org_slug)
     if AuthService.get_user_by_username(db, body.admin_username):
         raise HTTPException(status_code=400, detail="Username already exists")
@@ -70,10 +84,6 @@ def signup(body: SignupRequest, db: Session = Depends(get_platform_db)):
             "org_slug": slug,
             "org_name": body.org_name,
             "plan_slug": body.plan_slug,
-            "admin_username": body.admin_username,
-            "admin_email": str(body.admin_email),
-            "admin_full_name": body.admin_full_name,
-            "admin_password_hash": AuthService.hash_password(body.admin_password),
         },
     )
     pending = Organization(
@@ -83,10 +93,50 @@ def signup(body: SignupRequest, db: Session = Depends(get_platform_db)):
         status="pending",
         plan_id=plan.plan_id,
         stripe_customer_id=session.customer,
+        settings={"pending_signup": _pending_signup_payload(body)},
     )
     db.add(pending)
     db.commit()
     return {"checkout_url": session.url, "organization_id": pending.organization_id, "status": "pending"}
+
+
+def _activate_pending_org(db: Session, org: Organization, meta: dict, stripe_sub_id: str | None) -> None:
+    signup = (org.settings or {}).get("pending_signup") or {}
+    if not signup.get("admin_username"):
+        logger.error("Pending org %s missing pending_signup settings", org.slug)
+        return
+
+    create_tenant_tables(db, org.schema_name)
+    seed_tenant_defaults(db, org.schema_name, org.name)
+    user = User(
+        username=signup["admin_username"],
+        email=signup["admin_email"],
+        password_hash=signup["admin_password_hash"],
+        full_name=signup["admin_full_name"],
+    )
+    db.add(user)
+    db.flush()
+    AuthService.add_membership(db, user.user_id, org.organization_id, "ADMIN", is_default=True)
+    org.status = "active"
+    org.settings = {k: v for k, v in (org.settings or {}).items() if k != "pending_signup"}
+    plan = db.query(Plan).filter(Plan.slug == meta.get("plan_slug") or signup.get("plan_slug")).first()
+    if plan:
+        db.add(Subscription(
+            organization_id=org.organization_id,
+            plan_id=plan.plan_id,
+            stripe_subscription_id=stripe_sub_id,
+            status="active",
+        ))
+
+
+def _sync_subscription_status(db: Session, org: Organization, stripe_status: str) -> None:
+    sub = db.query(Subscription).filter(Subscription.organization_id == org.organization_id).first()
+    if sub:
+        sub.status = stripe_status
+    if stripe_status in ("canceled", "unpaid", "past_due"):
+        org.status = "suspended" if stripe_status in ("canceled", "unpaid") else org.status
+    elif stripe_status == "active":
+        org.status = "active"
 
 
 @router.post("/api/billing/webhooks/stripe")
@@ -108,34 +158,40 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_platform_db
         db.add(StripeEvent(stripe_event_id=event["id"], event_type=event["type"], payload=dict(event)))
         db.commit()
 
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        meta = session.get("metadata", {})
+    event_type = event["type"]
+    obj = event["data"]["object"]
+
+    if event_type == "checkout.session.completed":
+        meta = obj.get("metadata", {})
         slug = meta.get("org_slug")
         org = db.query(Organization).filter(Organization.slug == slug).first()
         if org and org.status == "pending":
-            create_tenant_tables(db, org.schema_name)
-            seed_tenant_defaults(db, org.schema_name, org.name)
-            user = User(
-                username=meta["admin_username"],
-                email=meta["admin_email"],
-                password_hash=meta["admin_password_hash"],
-                full_name=meta["admin_full_name"],
-            )
-            db.add(user)
-            db.flush()
-            AuthService.add_membership(db, user.user_id, org.organization_id, "ADMIN", is_default=True)
-            org.status = "active"
-            org.stripe_customer_id = session.get("customer")
-            plan = db.query(Plan).filter(Plan.slug == meta.get("plan_slug")).first()
-            if plan:
-                db.add(Subscription(
-                    organization_id=org.organization_id,
-                    plan_id=plan.plan_id,
-                    stripe_subscription_id=session.get("subscription"),
-                    status="active",
-                ))
+            _activate_pending_org(db, org, meta, obj.get("subscription"))
             db.commit()
+
+    elif event_type in ("customer.subscription.updated", "customer.subscription.deleted"):
+        sub_id = obj.get("id")
+        sub_row = db.query(Subscription).filter(Subscription.stripe_subscription_id == sub_id).first()
+        if sub_row:
+            org = db.query(Organization).filter(Organization.organization_id == sub_row.organization_id).first()
+            if org:
+                status = obj.get("status", "canceled")
+                if event_type == "customer.subscription.deleted":
+                    status = "canceled"
+                _sync_subscription_status(db, org, status)
+                sub_row.status = status
+                db.commit()
+
+    elif event_type == "invoice.payment_failed":
+        customer_id = obj.get("customer")
+        org = db.query(Organization).filter(Organization.stripe_customer_id == customer_id).first()
+        if org:
+            org.status = "suspended"
+            sub = db.query(Subscription).filter(Subscription.organization_id == org.organization_id).first()
+            if sub:
+                sub.status = "past_due"
+            db.commit()
+            logger.warning("Payment failed — suspended org %s", org.slug)
 
     db.query(StripeEvent).filter(StripeEvent.stripe_event_id == event["id"]).update({"processed": True})
     db.commit()

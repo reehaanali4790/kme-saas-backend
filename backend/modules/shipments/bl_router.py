@@ -35,8 +35,8 @@ ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
 
 
 def _bl_upload_dir(tenant: TenantContext) -> str:
-    from utils.uploads import tenant_upload_dir
-    return tenant_upload_dir(settings.UPLOAD_DIR, tenant.schema_name, "bl_documents")
+    from utils.staging import upload_dir
+    return upload_dir("bl_documents")
 
 # Mutations require OPERATOR+ - VIEWER can read BLs but not create/edit/delete them.
 _can_write = require_min_role("ADMIN", "MANAGER", "OPERATOR")

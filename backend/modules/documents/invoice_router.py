@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, 
 from infrastructure.documents.document_files import document_file_response
 from sqlalchemy.orm import Session
 
-from core.tenant import get_tenant_db
+from core.tenant import get_tenant_db, get_tenant_context, TenantContext
 from config.settings import settings
 from core.permissions import require_min_role
 from models.database_models import CommercialInvoice, Shipment, User
@@ -44,6 +44,7 @@ def upload_and_extract(
     override_reason: str | None = Query(None),
     file: UploadFile = File(...),
     db: Session = Depends(get_tenant_db),
+    tenant: TenantContext = Depends(get_tenant_context),
     current_user: User = Depends(_can_write),
 ):
     check_gate(db, request, shipment_id, ACTION_UPLOAD_INVOICE,
@@ -69,7 +70,8 @@ def upload_and_extract(
     existing_id = existing.invoice_id if existing else None
 
     try:
-        staged_name, stage_path, _ = stage_upload(file, STAGE_SUBDIR, ALLOWED_EXTENSIONS)
+        upload_dir = svc._upload_dir(tenant.schema_name)
+        staged_name, stage_path, _ = stage_upload(file, STAGE_SUBDIR, ALLOWED_EXTENSIONS, perm_dir=upload_dir)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -139,8 +141,9 @@ from modules.lc_creation.helpers.shipment_validator import validate_shipment
 
 @router.post("/")
 def save_invoice(data: InvoiceSave, db: Session = Depends(get_tenant_db),
+                 tenant: TenantContext = Depends(get_tenant_context),
                  current_user: User = Depends(_can_write)):
-    inv = svc.save_invoice(db, data, current_user.user_id)
+    inv = svc.save_invoice(db, data, current_user.user_id, tenant_schema=tenant.schema_name)
     warning = svc.sync_shipment_from_invoice(inv, db)
     log_activity(db, inv.shipment_id, current_user.user_id, "UPLOAD", doc_type="Commercial Invoice")
     validate_shipment(inv.shipment_id, db)

@@ -165,13 +165,8 @@ def _issue_tokens_for_membership(
     if not org:
         raise HTTPException(status_code=400, detail="Organization not found")
 
-    # Align with tenant context: suspended/archived orgs cannot use the product.
-    # Platform admins still authenticate via an active/trial membership (e.g. default).
-    if org.status not in ("active", "trial", "pending"):
-        raise HTTPException(
-            status_code=403,
-            detail=f"Organization '{org.name}' is {org.status} and cannot be accessed",
-        )
+    from core.org_access import assert_org_accessible
+    assert_org_accessible(org)
 
     plan_slug = org.plan.slug if org.plan else None
     token_data = build_token_payload(

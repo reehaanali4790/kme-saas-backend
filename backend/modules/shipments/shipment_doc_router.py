@@ -16,13 +16,13 @@ from sqlalchemy.orm import Session
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.tenant import get_tenant_db
+from core.tenant import get_tenant_db, get_tenant_context, TenantContext
 from core.platform_metering import enforce_document_quota, meter_document_accepted
 from config.settings import settings
 from models.database_models import ShipmentDocument, Shipment, User
 from modules.auth.dependencies import get_current_user
 from infrastructure.activity.activity_service import log_activity
-from utils.staging import stage_upload, promote_staged
+from utils.staging import stage_upload, promote_staged, upload_dir as staging_upload_dir
 from .shipment_doc_schemas import ShipmentDocSave
 
 logger = logging.getLogger("uvicorn")
@@ -31,7 +31,6 @@ router = APIRouter(prefix="/api/shipment-docs", tags=["Shipment Documents"])
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
 UPLOAD_SUBDIR = "shipment_documents"
-UPLOAD_DIR = os.path.join(settings.UPLOAD_DIR, UPLOAD_SUBDIR)
 KINDS = ("DPL", "OTHER")
 
 
@@ -75,7 +74,9 @@ def stage_shipment_doc(
         raise HTTPException(status_code=404, detail="Shipment not found")
 
     try:
-        staged_name, stage_path, _ext = stage_upload(file, UPLOAD_SUBDIR, ALLOWED_EXTENSIONS, perm_dir=UPLOAD_DIR)
+        staged_name, stage_path, _ext = stage_upload(
+            file, UPLOAD_SUBDIR, ALLOWED_EXTENSIONS, perm_dir=staging_upload_dir(UPLOAD_SUBDIR),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -152,7 +153,8 @@ def save_shipment_doc(
 
     orig = data.original_filename or "document.pdf"
     dest, promoted_name = promote_staged(
-        UPLOAD_SUBDIR, data.staged_file, doc.doc_id, orig, ALLOWED_EXTENSIONS, perm_dir=UPLOAD_DIR,
+        UPLOAD_SUBDIR, data.staged_file, doc.doc_id, orig, ALLOWED_EXTENSIONS,
+        perm_dir=staging_upload_dir(UPLOAD_SUBDIR),
     )
     if not dest:
         raise HTTPException(status_code=400, detail="Staged document not found — please re-upload the file.")

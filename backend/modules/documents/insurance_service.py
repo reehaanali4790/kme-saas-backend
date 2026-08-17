@@ -18,16 +18,15 @@ from core.exceptions import NotFoundError
 from models.database_models import InsuranceCertificate, Shipment
 from modules.documents.insurance_schemas import InsuranceSave, STR_FIELDS, DATE_FIELDS, DEC_FIELDS
 from utils.uploads import safe_upload_path
-from utils.staging import promote_staged, replace_document_path
+from utils.staging import promote_staged, replace_document_path, upload_dir as staging_upload_dir
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
-UPLOAD_DIR = os.path.join(settings.UPLOAD_DIR, "insurance_documents")
 STAGE_SUBDIR = "insurance_documents"
 
 
 def save_file(upload: UploadFile, insurance_id: int) -> str:
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    dest = safe_upload_path(UPLOAD_DIR, insurance_id, upload.filename, ALLOWED_EXTENSIONS)
+    upload_dir = staging_upload_dir(STAGE_SUBDIR)
+    dest = safe_upload_path(upload_dir, insurance_id, upload.filename, ALLOWED_EXTENSIONS)
     with open(dest, "wb") as f:
         shutil.copyfileobj(upload.file, f)
     return dest

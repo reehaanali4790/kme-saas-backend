@@ -32,6 +32,22 @@ from models import platform_models  # noqa: F401 — register platform schema ta
 configure_logging()
 logger = logging.getLogger("uvicorn")
 
+if settings.SENTRY_DSN:
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.fastapi import FastApiIntegration
+        from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+
+        sentry_sdk.init(
+            dsn=settings.SENTRY_DSN,
+            environment=settings.ENVIRONMENT,
+            traces_sample_rate=settings.SENTRY_TRACES_SAMPLE_RATE,
+            integrations=[FastApiIntegration(), SqlalchemyIntegration()],
+        )
+        logger.info("Sentry initialized")
+    except ImportError:
+        logger.warning("SENTRY_DSN set but sentry-sdk not installed")
+
 # Import the single aggregated API router (see modules/api.py — add new module
 # routers there, not here).
 from modules.api import api_router

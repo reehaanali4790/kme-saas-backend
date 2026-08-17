@@ -21,12 +21,12 @@ from infrastructure.normalization.normalization_service import (
     match_bank, match_company, normalize_item, clean_goods_description, validate_text_field, detect_quality,
 )
 from utils.uploads import safe_upload_path
+from utils.staging import staged_dir, upload_dir as staging_upload_dir
 from .schemas import LCCreate
 
 logger = logging.getLogger("uvicorn")
 
-UPLOAD_DIR = os.path.join(settings.UPLOAD_DIR, "lc_documents")
-STAGE_DIR = os.path.join(UPLOAD_DIR, "_staged")
+LC_SUBDIR = "lc_documents"
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
 
 
@@ -135,10 +135,10 @@ def create_lc(db: Session, data: LCCreate, created_by: int) -> Tuple[LCMaster, L
 
     # move the staged LC document into place
     if data.staged_file:
-        sp = os.path.join(STAGE_DIR, os.path.basename(data.staged_file))
+        sp = os.path.join(staged_dir(LC_SUBDIR), os.path.basename(data.staged_file))
         if os.path.exists(sp):
             orig = data.original_filename or ("lc" + Path(sp).suffix)
-            dest = safe_upload_path(UPLOAD_DIR, lc.lc_id, orig, ALLOWED_EXTENSIONS)
+            dest = safe_upload_path(staging_upload_dir(LC_SUBDIR), lc.lc_id, orig, ALLOWED_EXTENSIONS)
             os.replace(sp, dest)
             lc.document_path = dest
 

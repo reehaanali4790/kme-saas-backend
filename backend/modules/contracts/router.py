@@ -31,11 +31,16 @@ from .schemas import (
 
 logger = logging.getLogger("uvicorn")
 
+from utils.staging import staged_dir, upload_dir as staging_upload_dir
+
 router = APIRouter(prefix="/api/contracts", tags=["Contracts"])
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
-UPLOAD_DIR = os.path.join(settings.UPLOAD_DIR, "contract_documents")
-STAGE_DIR = os.path.join(UPLOAD_DIR, "_staged")
+CONTRACT_SUBDIR = "contract_documents"
+
+
+def _contract_stage_dir() -> str:
+    return staged_dir(CONTRACT_SUBDIR)
 
 _can_write = require_min_role("ADMIN", "MANAGER", "OPERATOR")
 
@@ -72,9 +77,9 @@ def _contract_upload_inner(lc_id, file, ext):
     # must not leave permanent DRAFT rows behind. The contract is only created when the
     # user reviews the extracted fields and clicks "Save Contract" (see save_contract()),
     # same pattern as LC creation's upload-and-extract.
-    os.makedirs(STAGE_DIR, exist_ok=True)
+    os.makedirs(_contract_stage_dir(), exist_ok=True)
     staged = f"{uuid.uuid4().hex}{ext}"
-    stage_path = os.path.join(STAGE_DIR, staged)
+    stage_path = os.path.join(_contract_stage_dir(), staged)
     with open(stage_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 

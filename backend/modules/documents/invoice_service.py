@@ -14,17 +14,20 @@ from core.exceptions import NotFoundError
 from models.database_models import CommercialInvoice, InvoiceLineItem, Shipment, LCMaster
 from modules.documents.invoice_schemas import InvoiceSave, STR_FIELDS, DEC_FIELDS
 from infrastructure.normalization.normalization_service import normalize_invoice_parties
-from utils.uploads import safe_upload_path
+from utils.uploads import safe_upload_path, tenant_doc_dir
 from utils.staging import promote_staged, replace_document_path
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
-UPLOAD_DIR = os.path.join(settings.UPLOAD_DIR, "invoice_documents")
 STAGE_SUBDIR = "invoice_documents"
 
 
-def save_file(upload: UploadFile, invoice_id: int) -> str:
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    dest = safe_upload_path(UPLOAD_DIR, invoice_id, upload.filename, ALLOWED_EXTENSIONS)
+def _upload_dir(tenant_schema: str | None) -> str | None:
+    return tenant_doc_dir(tenant_schema, STAGE_SUBDIR) if tenant_schema else None
+
+
+def save_file(upload: UploadFile, invoice_id: int, tenant_schema: str) -> str:
+    upload_dir = tenant_doc_dir(tenant_schema, STAGE_SUBDIR)
+    dest = safe_upload_path(upload_dir, invoice_id, upload.filename, ALLOWED_EXTENSIONS)
     with open(dest, "wb") as f:
         shutil.copyfileobj(upload.file, f)
     return dest
@@ -175,12 +178,14 @@ def get_invoice_or_404(db: Session, invoice_id: int, with_items: bool = False) -
     return inv
 
 
-def apply_staged_document(inv: CommercialInvoice, data: InvoiceSave):
+def apply_staged_document(inv: CommercialInvoice, data: InvoiceSave, *, tenant_schema: str | None = None):
     if not data.staged_file:
         return
+    upload_dir = _upload_dir(tenant_schema)
     dest, orig = promote_staged(
         STAGE_SUBDIR, data.staged_file, inv.invoice_id,
         data.original_filename, ALLOWED_EXTENSIONS,
+        perm_dir=upload_dir,
     )
     if dest:
         replace_document_path(inv, dest, orig)
@@ -221,7 +226,7 @@ def _resolve_invoice(db: Session, data: InvoiceSave, user_id: int) -> Commercial
     return inv
 
 
-def save_invoice(db: Session, data: InvoiceSave, user_id: int) -> CommercialInvoice:
+def save_invoice(db: Session, data: InvoiceSave, user_id: int, *, tenant_schema: str | None = None) -> CommercialInvoice:
     inv = _resolve_invoice(db, data, user_id)
 
     overwrites = set(data.confirm_overwrites or [])
@@ -235,7 +240,7 @@ def save_invoice(db: Session, data: InvoiceSave, user_id: int) -> CommercialInvo
 
     apply_invoice_fields(inv, data, user_id)
     normalize_invoice_parties(inv, db)
-    apply_staged_document(inv, data)
+    apply_staged_document(inv, data, tenant_schema=tenant_schema)
     _sync_invoice_file_pending(inv)
     if not data.staged_file and inv.source == "MANUAL":
         inv.file_pending = True

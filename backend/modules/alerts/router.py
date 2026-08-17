@@ -8,8 +8,9 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
-from core.tenant import get_tenant_db
+from core.tenant import get_tenant_db, TenantContext
 from core.permissions import require_permission
+from core.plan_limits import require_plan_feature
 from core.schemas import PaginatedResponse, PaginationParams
 from models.database_models import User
 from modules.auth.dependencies import get_current_user
@@ -23,6 +24,7 @@ router = APIRouter(prefix="/api/alerts", tags=["Alerts"])
 
 _can_take_action = require_permission("reopen_lc")
 _require_admin = require_permission("manage_users")
+_whatsapp_plan = require_plan_feature("whatsapp")
 
 
 @router.get("/list", response_model=PaginatedResponse[AlertResponse])
@@ -115,7 +117,10 @@ def get_alert_detail(
 # --------------------------------------------------------------------------- #
 
 @router.get("/whatsapp/status")
-def whatsapp_status(current_user: User = Depends(_require_admin)):
+def whatsapp_status(
+    current_user: User = Depends(_require_admin),
+    _plan: TenantContext = Depends(_whatsapp_plan),
+):
     """Report whether WhatsApp sending is configured and ready."""
     from infrastructure.whatsapp import whatsapp_service
     from config.settings import settings
@@ -134,7 +139,10 @@ def whatsapp_status(current_user: User = Depends(_require_admin)):
 
 
 @router.post("/whatsapp/provision-template")
-def whatsapp_provision_template(current_user: User = Depends(_require_admin)):
+def whatsapp_provision_template(
+    current_user: User = Depends(_require_admin),
+    _plan: TenantContext = Depends(_whatsapp_plan),
+):
     """
     Submit the branded-PDF WhatsApp template to Meta for approval, if it
     doesn't already exist. Safe to call repeatedly (no-op once it exists).
@@ -147,6 +155,7 @@ def whatsapp_provision_template(current_user: User = Depends(_require_admin)):
 def whatsapp_test(
     payload: WhatsAppTestRequest,
     current_user: User = Depends(_require_admin),
+    _plan: TenantContext = Depends(_whatsapp_plan),
 ):
     """Send a one-off test message to verify credentials end-to-end."""
     from infrastructure.whatsapp import whatsapp_service
@@ -160,6 +169,7 @@ def whatsapp_test(
 def whatsapp_send_pending(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(_require_admin),
+    _plan: TenantContext = Depends(_whatsapp_plan),
 ):
     """Dispatch all not-yet-sent alerts to recipients (also works as a retry)."""
     from infrastructure.whatsapp import whatsapp_service
@@ -171,6 +181,7 @@ def whatsapp_resend(
     alert_id: int,
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(_require_admin),
+    _plan: TenantContext = Depends(_whatsapp_plan),
 ):
     """Manually (re)send a single alert to all active recipients who want it."""
     from infrastructure.whatsapp import whatsapp_service
@@ -184,6 +195,7 @@ def whatsapp_resend(
 def whatsapp_get_config(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(_require_admin),
+    _plan: TenantContext = Depends(_whatsapp_plan),
 ):
     """Return the caller's WhatsApp recipient row, or null if not registered yet."""
     from models.database_models import WhatsAppConfig
@@ -199,6 +211,7 @@ def whatsapp_upsert_config(
     payload: WhatsAppConfigUpsert,
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(_require_admin),
+    _plan: TenantContext = Depends(_whatsapp_plan),
 ):
     """
     Create or update the caller's WhatsApp recipient row. Always receives ALL

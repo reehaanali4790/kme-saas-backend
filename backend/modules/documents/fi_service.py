@@ -13,16 +13,15 @@ from core.exceptions import NotFoundError
 from models.database_models import FinancialInstrument, Shipment
 from modules.documents.fi_schemas import FISave, STR_FIELDS, DATE_FIELDS, DEC_FIELDS
 from utils.uploads import safe_upload_path
-from utils.staging import promote_staged, replace_document_path
+from utils.staging import promote_staged, replace_document_path, upload_dir as staging_upload_dir
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
-UPLOAD_DIR = os.path.join(settings.UPLOAD_DIR, "fi_documents")
 STAGE_SUBDIR = "fi_documents"
 
 
 def save_file(upload: UploadFile, fi_id: int) -> str:
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    dest = safe_upload_path(UPLOAD_DIR, fi_id, upload.filename, ALLOWED_EXTENSIONS)
+    upload_dir = staging_upload_dir(STAGE_SUBDIR)
+    dest = safe_upload_path(upload_dir, fi_id, upload.filename, ALLOWED_EXTENSIONS)
     with open(dest, "wb") as f:
         shutil.copyfileobj(upload.file, f)
     return dest

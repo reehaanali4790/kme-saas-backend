@@ -18,6 +18,12 @@ from utils.uploads import safe_upload_path
 
 
 def upload_dir(subdir: str) -> str:
+    from core.tenant_upload import get_current_tenant_schema
+    from utils.uploads import tenant_doc_dir
+
+    schema = get_current_tenant_schema()
+    if schema:
+        return tenant_doc_dir(schema, subdir)
     return os.path.join(settings.UPLOAD_DIR, subdir)
 
 

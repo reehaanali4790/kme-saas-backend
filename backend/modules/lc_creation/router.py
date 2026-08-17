@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, 
 from infrastructure.documents.document_files import document_file_response
 from sqlalchemy.orm import Session
 
-from core.tenant import get_tenant_db
+from core.tenant import get_tenant_db, get_tenant_context, TenantContext
 from config.settings import settings
 from models.database_models import LCMaster, Contract, User
 from modules.auth.dependencies import get_current_user
@@ -27,11 +27,16 @@ from modules.workflow.helpers import check_lc_upload
 
 logger = logging.getLogger("uvicorn")
 
+from utils.staging import staged_dir
+
 router = APIRouter(prefix="/api/lc-create", tags=["LC Creation"])
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
-UPLOAD_DIR = os.path.join(settings.UPLOAD_DIR, "lc_documents")
-STAGE_DIR = os.path.join(UPLOAD_DIR, "_staged")
+LC_SUBDIR = "lc_documents"
+
+
+def _lc_stage_dir() -> str:
+    return staged_dir(LC_SUBDIR)
 
 
 def _safe_remove(p):
@@ -69,9 +74,9 @@ def upload_and_extract(
         if not contract:
             raise HTTPException(status_code=404, detail="Contract not found")
 
-    os.makedirs(STAGE_DIR, exist_ok=True)
+    os.makedirs(_lc_stage_dir(), exist_ok=True)
     staged = f"{uuid.uuid4().hex}{ext}"
-    path = os.path.join(STAGE_DIR, staged)
+    path = os.path.join(_lc_stage_dir(), staged)
     with open(path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 

@@ -16,10 +16,10 @@ from infrastructure.normalization.normalization_service import (
 from infrastructure.audit.audit_service import log_audit
 from utils.parsing import parse_date
 from utils.uploads import safe_upload_path
+from utils.staging import staged_dir, upload_dir as staging_upload_dir
 from .schemas import BankPerformanceRow, ContractLineItemIn, ContractLineItemOut, ContractOut, ContractSave
 
-UPLOAD_DIR = os.path.join(settings.UPLOAD_DIR, "contract_documents")
-STAGE_DIR = os.path.join(UPLOAD_DIR, "_staged")
+CONTRACT_SUBDIR = "contract_documents"
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
 
 # Column max lengths for String fields — AI extraction often exceeds these and
@@ -322,12 +322,12 @@ def save_contract(db: Session, data: ContractSave, created_by: int) -> Contract:
     apply_items(c, data.line_items, db)
     normalize_contract_parties(c, db)
     if is_new and data.staged_file:
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
-        stage_path = os.path.join(STAGE_DIR, os.path.basename(data.staged_file))
+        upload_dir = staging_upload_dir(CONTRACT_SUBDIR)
+        stage_path = os.path.join(staged_dir(CONTRACT_SUBDIR), os.path.basename(data.staged_file))
         if os.path.exists(stage_path):
             orig = data.original_filename or ("contract" + Path(stage_path).suffix)
             try:
-                dest = safe_upload_path(UPLOAD_DIR, c.contract_id, orig, ALLOWED_EXTENSIONS)
+                dest = safe_upload_path(upload_dir, c.contract_id, orig, ALLOWED_EXTENSIONS)
                 os.replace(stage_path, dest)
                 c.document_filename = orig
                 c.document_path = dest

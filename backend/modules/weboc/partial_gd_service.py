@@ -19,7 +19,7 @@ from core.exceptions import NotFoundError, ConflictError, ValidationError
 from models.database_models import (
     ExBondEntry, ExBondItem, GDAttachment, GoodsDeclaration, EdbApproval, SroGroupNumber,
 )
-from modules.weboc.gd_service import recompute_gd_status, ATTACH_DIR, ALLOWED_EXTENSIONS
+from modules.weboc.gd_service import recompute_gd_status, attach_upload_dir, ALLOWED_EXTENSIONS
 from modules.weboc.services import (
     get_gd_or_error, _require_into_bond_filed, _f, _dec, _int, _str, _date,
 )
@@ -124,12 +124,12 @@ def replace_entry_attachment(entry: ExBondEntry, kind: str, filename: str, file_
         db.delete(a)
     db.flush()
 
-    os.makedirs(ATTACH_DIR, exist_ok=True)
+    attach_dir = attach_upload_dir()
     att = GDAttachment(gd_id=entry.into_bond_gd_id, ex_bond_entry_id=entry.entry_id,
                        kind=kind, filename=filename, uploaded_by=user_id)
     db.add(att)
     db.flush()
-    dest = safe_upload_path(ATTACH_DIR, att.attachment_id, filename, ALLOWED_EXTENSIONS)
+    dest = safe_upload_path(attach_dir, att.attachment_id, filename, ALLOWED_EXTENSIONS)
     with open(dest, "wb") as f:
         f.write(file_contents)
     att.file_path = dest
@@ -141,12 +141,12 @@ def add_entry_attachment(entry: ExBondEntry, kind: str, filename: str, file_cont
                           db: Session, user_id: int) -> GDAttachment:
     """Append a new attachment (used for Item Details — several are expected per
     Partial GD, so each upload adds a new document rather than replacing the last)."""
-    os.makedirs(ATTACH_DIR, exist_ok=True)
+    attach_dir = attach_upload_dir()
     att = GDAttachment(gd_id=entry.into_bond_gd_id, ex_bond_entry_id=entry.entry_id,
                        kind=kind, filename=filename, uploaded_by=user_id)
     db.add(att)
     db.flush()
-    dest = safe_upload_path(ATTACH_DIR, att.attachment_id, filename, ALLOWED_EXTENSIONS)
+    dest = safe_upload_path(attach_dir, att.attachment_id, filename, ALLOWED_EXTENSIONS)
     with open(dest, "wb") as f:
         f.write(file_contents)
     att.file_path = dest
@@ -266,10 +266,11 @@ def commit_staged_entry_attachment(
     replace: bool = True,
 ) -> GDAttachment:
     from utils.staging import staged_dir
-    from modules.weboc.gd_service import ATTACH_STAGE_SUBDIR, ATTACH_DIR
+    from modules.weboc.gd_service import ATTACH_STAGE_SUBDIR, attach_upload_dir
 
+    attach_dir = attach_upload_dir()
     stage_path = os.path.join(
-        staged_dir(ATTACH_STAGE_SUBDIR, ATTACH_DIR), os.path.basename(staged_file))
+        staged_dir(ATTACH_STAGE_SUBDIR, attach_dir), os.path.basename(staged_file))
     if not os.path.exists(stage_path):
         raise ValidationError("Staged document not found — please re-upload the file.")
     with open(stage_path, "rb") as f:

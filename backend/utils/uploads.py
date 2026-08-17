@@ -42,3 +42,9 @@ def tenant_upload_dir(base_upload_dir: str, tenant_schema: str, subdir: str) -> 
     path = os.path.join(base_upload_dir, tenant_schema, subdir)
     os.makedirs(path, exist_ok=True)
     return path
+
+
+def tenant_doc_dir(tenant_schema: str, subdir: str) -> str:
+    """Resolve tenant-scoped permanent upload dir using app settings."""
+    from config.settings import settings
+    return tenant_upload_dir(settings.UPLOAD_DIR, tenant_schema, subdir)

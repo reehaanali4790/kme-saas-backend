@@ -28,6 +28,21 @@ STAGE_SUBDIR = "gd_documents"
 ATTACH_STAGE_SUBDIR = "gd_attachments"
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
 
+
+def _gd_upload_dir() -> str:
+    from utils.staging import upload_dir
+    return upload_dir(STAGE_SUBDIR)
+
+
+def _attach_upload_dir() -> str:
+    from utils.staging import upload_dir
+    return upload_dir(ATTACH_STAGE_SUBDIR)
+
+
+def attach_upload_dir() -> str:
+    """Tenant-scoped GD attachment directory (respects request tenant context)."""
+    return _attach_upload_dir()
+
 GD_TYPES = ("HOME_CONSUMPTION", "INTO_BOND", "EX_BOND")
 ATTACH_KINDS = ("EXAMINATION", "LAB", "ASSESSMENT", "GD_VIEW", "ITEM_DETAILS", "FINAL_GD",
                 "INTO_BOND_GD", "EX_BOND_GD")
@@ -228,8 +243,8 @@ def replace_items(gd: GoodsDeclaration, items: Optional[List[GDItemIn]], db: Ses
 
 
 def save_file(upload: UploadFile, gd_id: int) -> str:
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    dest = safe_upload_path(UPLOAD_DIR, gd_id, upload.filename, ALLOWED_EXTENSIONS)
+    upload_dir = _gd_upload_dir()
+    dest = safe_upload_path(upload_dir, gd_id, upload.filename, ALLOWED_EXTENSIONS)
     with open(dest, "wb") as f:
         shutil.copyfileobj(upload.file, f)
     return dest
@@ -458,11 +473,11 @@ def add_attachment(gd_id: int, kind: str, file: UploadFile, user_id: int, db: Se
     if ext not in ALLOWED_EXTENSIONS:
         raise ValidationError(f"Only JPG, PNG, PDF supported. Got: {ext}")
 
-    os.makedirs(ATTACH_DIR, exist_ok=True)
+    attach_dir = _attach_upload_dir()
     att = GDAttachment(gd_id=gd.gd_id, kind=kind, filename=file.filename, uploaded_by=user_id)
     db.add(att)
     db.flush()  # need attachment_id for the filename
-    dest = safe_upload_path(ATTACH_DIR, att.attachment_id, file.filename, ALLOWED_EXTENSIONS)
+    dest = safe_upload_path(attach_dir, att.attachment_id, file.filename, ALLOWED_EXTENSIONS)
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
     att.file_path = dest

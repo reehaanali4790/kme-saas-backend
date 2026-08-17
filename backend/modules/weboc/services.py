@@ -13,7 +13,7 @@ from models.database_models import (
     GoodsDeclaration, GDAttachment, GDItem, ExBondEntry, GdKgtlWeighment, Shipment
 )
 from modules.weboc.gd_service import (
-    recompute_gd_status, ATTACH_DIR, ATTACH_STAGE_SUBDIR, ALLOWED_EXTENSIONS
+    recompute_gd_status, attach_upload_dir, ATTACH_STAGE_SUBDIR, ALLOWED_EXTENSIONS
 )
 from utils.staging import stage_bytes, staged_dir
 from infrastructure.activity.activity_service import log_activity
@@ -113,7 +113,7 @@ def resolve_gd_for_save(
 
 
 def stage_attachment_bytes(file_contents: bytes, filename: str) -> tuple[str, str]:
-    return stage_bytes(file_contents, ATTACH_STAGE_SUBDIR, ALLOWED_EXTENSIONS, filename, perm_dir=ATTACH_DIR)
+    return stage_bytes(file_contents, ATTACH_STAGE_SUBDIR, ALLOWED_EXTENSIONS, filename, perm_dir=attach_upload_dir())
 
 
 def commit_staged_attachment(
@@ -126,8 +126,9 @@ def commit_staged_attachment(
     *,
     replace: bool = True,
 ) -> GDAttachment:
+    attach_dir = attach_upload_dir()
     stage_path = os.path.join(
-        staged_dir(ATTACH_STAGE_SUBDIR, ATTACH_DIR), os.path.basename(staged_file))
+        staged_dir(ATTACH_STAGE_SUBDIR, attach_dir), os.path.basename(staged_file))
     if not os.path.exists(stage_path):
         raise ValidationError("Staged document not found — please re-upload the file.")
     with open(stage_path, "rb") as f:
@@ -156,12 +157,12 @@ def replace_gd_attachment(gd: GoodsDeclaration, kind: str, filename: str, file_c
         db.delete(a)
     db.flush()
 
-    os.makedirs(ATTACH_DIR, exist_ok=True)
+    attach_dir = attach_upload_dir()
     att = GDAttachment(gd_id=gd.gd_id, kind=kind, filename=filename,
                        uploaded_by=user_id)
     db.add(att)
     db.flush()
-    dest = safe_upload_path(ATTACH_DIR, att.attachment_id, filename, ALLOWED_EXTENSIONS)
+    dest = safe_upload_path(attach_dir, att.attachment_id, filename, ALLOWED_EXTENSIONS)
     with open(dest, "wb") as f:
         f.write(file_contents)
     att.file_path = dest
@@ -172,12 +173,12 @@ def replace_gd_attachment(gd: GoodsDeclaration, kind: str, filename: str, file_c
 def add_gd_attachment(gd: GoodsDeclaration, kind: str, filename: str, file_contents: bytes,
                        db: Session, user_id: int) -> GDAttachment:
     """Append a new attachment."""
-    os.makedirs(ATTACH_DIR, exist_ok=True)
+    attach_dir = attach_upload_dir()
     att = GDAttachment(gd_id=gd.gd_id, kind=kind, filename=filename,
                        uploaded_by=user_id)
     db.add(att)
     db.flush()
-    dest = safe_upload_path(ATTACH_DIR, att.attachment_id, filename, ALLOWED_EXTENSIONS)
+    dest = safe_upload_path(attach_dir, att.attachment_id, filename, ALLOWED_EXTENSIONS)
     with open(dest, "wb") as f:
         f.write(file_contents)
     att.file_path = dest
