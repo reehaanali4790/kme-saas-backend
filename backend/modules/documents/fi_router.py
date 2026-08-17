@@ -18,6 +18,7 @@ from models.database_models import FinancialInstrument, Shipment, User
 from modules.auth.dependencies import get_current_user
 from infrastructure.activity.activity_service import log_activity
 from infrastructure.document_ai.document_ai import safe_extract
+from infrastructure.document_ai.segmentation_response import segmentation_warnings, strip_extraction_internals
 from core.platform_metering import enforce_document_quota, meter_document_accepted
 from modules.documents.extractors.fi_extractor import extract_fi
 from modules.documents import fi_service as svc
@@ -95,6 +96,8 @@ def upload_and_extract(
 
     meter_document_accepted(file_path=stage_path)
     warnings = svc.check_expiry_warning(extracted)
+    warnings.extend(segmentation_warnings(extracted, "fi"))
+    strip_extraction_internals(extracted)
 
     return {
         "staged_file": staged_name,

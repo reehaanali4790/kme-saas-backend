@@ -17,6 +17,7 @@ from models.database_models import PackingList, Shipment, User
 from modules.auth.dependencies import get_current_user
 from infrastructure.activity.activity_service import log_activity
 from infrastructure.document_ai.document_ai import safe_extract
+from infrastructure.document_ai.segmentation_response import segmentation_warnings, strip_extraction_internals
 from core.platform_metering import enforce_document_quota, meter_document_accepted
 from modules.documents.extractors.packing_extractor import extract_packing
 from modules.documents import packing_service as svc
@@ -93,6 +94,8 @@ def upload_and_extract(
 
     meter_document_accepted(file_path=stage_path)
     partial = bool(extracted.get("_extraction_partial"))
+    warnings = segmentation_warnings(extracted, "packing")
+    strip_extraction_internals(extracted)
     return {
         "staged_file": staged_name,
         "original_filename": file.filename,
@@ -101,6 +104,7 @@ def upload_and_extract(
         "extracted": extracted,
         "extraction_failed": False,
         "extraction_partial": partial,
+        "warnings": warnings,
         "extraction_message": (
             "This document was long, so some line items may be missing. "
             "Please check the rows below before saving." if partial else None),

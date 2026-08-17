@@ -11,6 +11,12 @@ logger = logging.getLogger("uvicorn")
 INVOICE_PROMPT = """You are a trade-document parser. Extract data from this COMMERCIAL INVOICE
 (a seller's invoice for an international steel shipment).
 
+IMPORTANT — this file may be a COMBINED document containing several documents
+(Commercial Invoice + Packing List + Bill of Lading), often on separate pages.
+You are receiving ONLY the Commercial Invoice section (the relevant page(s) have
+already been selected). Extract invoice data from these pages only — do NOT read
+packing-list tables or bill-of-lading fields from other sections.
+
 Find each field by searching for its label text anywhere on the document.
 DO NOT assume a fixed position — labels vary between exporters. Read the WHOLE document,
 including any line-item / goods table.

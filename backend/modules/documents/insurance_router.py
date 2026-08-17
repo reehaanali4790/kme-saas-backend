@@ -17,6 +17,7 @@ from core.permissions import require_min_role
 from models.database_models import InsuranceCertificate, Shipment, User
 from modules.auth.dependencies import get_current_user
 from infrastructure.document_ai.document_ai import safe_extract
+from infrastructure.document_ai.segmentation_response import segmentation_warnings, strip_extraction_internals
 from core.platform_metering import enforce_document_quota, meter_document_accepted
 from modules.documents.extractors.insurance_extractor import extract_insurance
 from infrastructure.activity.activity_service import log_activity
@@ -96,6 +97,8 @@ def upload_and_extract(
     if verification["lc"] == "NOT_MATCHED":
         warnings.append(f"Extracted LC number does not match the shipment LC "
                         f"({verification['shipment_lc_number'] or 'none on file'}).")
+    warnings.extend(segmentation_warnings(extracted, "insurance"))
+    strip_extraction_internals(extracted)
 
     return {
         "staged_file": staged_name,

@@ -21,6 +21,7 @@ from modules.auth.dependencies import get_current_user
 from core.permissions import require_min_role
 from modules.shipments.extractors.bl_extractor import extract_bl_from_image
 from infrastructure.document_ai.document_ai import ExtractionError
+from infrastructure.document_ai.segmentation_response import segmentation_warnings, strip_extraction_internals
 from modules.shipments import bl_service as svc
 from modules.shipments.bl_schemas import BLLinkLC, BLSave, BLStatusUpdate
 from modules.shipments.container_detention_service import resolve_bl_type
@@ -247,6 +248,8 @@ def upload_and_extract(
 
     bl_type = resolve_bl_type(extracted, None, db)
     extracted["bl_type"] = bl_type
+    warnings = segmentation_warnings(extracted, "bl")
+    strip_extraction_internals(extracted)
 
     return {
         "staged_file": staged_name,
@@ -254,6 +257,7 @@ def upload_and_extract(
         "existing_bl_id": existing_bl_id,
         "extracted": extracted,
         "is_pdf": ext == ".pdf",
+        "warnings": warnings,
     }
 
 

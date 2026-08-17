@@ -83,47 +83,63 @@ def _render_page(page, zoom: float, fmt: str = "png") -> bytes:
     return page.get_pixmap(matrix=fitz.Matrix(zoom, zoom)).tobytes(fmt)
 
 
-def _pdf_to_page_images(file_path: str, max_pages: int | None = None) -> list[tuple[bytes, str]]:
-    """Convert each PDF page to an image (2x scale for OCR accuracy), returning
-    (bytes, media_type) per page. Pages that exceed MAX_IMAGE_BYTES at 2x are
-    progressively downscaled; if a lossless PNG is still too large (photographic
-    scans), they fall back to JPEG which compresses far better.
-    max_pages caps how many pages are sent (e.g. a SWIFT LC can be 100+ pages of
-    amendments/repeats — the caller uploads only the first detail pages)."""
+def _pdf_to_page_images(
+    file_path: str,
+    max_pages: int | None = None,
+    page_indices: list[int] | None = None,
+    zoom: float = 2.0,
+) -> list[tuple[bytes, str]]:
+    """Convert each PDF page to an image, returning (bytes, media_type) per page.
+
+    page_indices — optional 1-based page numbers to include (for combined PDFs where
+    only the Commercial Invoice / Packing List / B/L section should be extracted).
+    max_pages caps how many rendered pages are sent (e.g. SWIFT LC detail pages).
+    """
     import fitz  # pymupdf
 
     doc = fitz.open(file_path)
     images = []
     for i, page in enumerate(doc):
-        if max_pages and i >= max_pages:
+        page_num = i + 1
+        if page_indices is not None and page_num not in page_indices:
+            continue
+        if max_pages is not None and len(images) >= max_pages:
             break
-        zoom = 2.0
         data = _render_page(page, zoom, "png")
         media = "image/png"
-        while len(data) > MAX_IMAGE_BYTES and zoom > 0.75:
-            zoom *= 0.75
-            data = _render_page(page, zoom, "png")
+        render_zoom = zoom
+        while len(data) > MAX_IMAGE_BYTES and render_zoom > 0.75:
+            render_zoom *= 0.75
+            data = _render_page(page, render_zoom, "png")
         if len(data) > MAX_IMAGE_BYTES:
-            zoom = 2.0
-            data = _render_page(page, zoom, "jpeg")
+            render_zoom = zoom
+            data = _render_page(page, render_zoom, "jpeg")
             media = "image/jpeg"
-            while len(data) > MAX_IMAGE_BYTES and zoom > 0.4:
-                zoom *= 0.75
-                data = _render_page(page, zoom, "jpeg")
+            while len(data) > MAX_IMAGE_BYTES and render_zoom > 0.4:
+                render_zoom *= 0.75
+                data = _render_page(page, render_zoom, "jpeg")
         images.append((data, media))
-        logger.info(f"  page {i + 1}: {media}, zoom={zoom:.2f}, {len(data) // 1024} KB")
+        logger.info(f"  page {page_num}: {media}, zoom={render_zoom:.2f}, {len(data) // 1024} KB")
     total = doc.page_count
     doc.close()
-    logger.info(f"PDF converted: {len(images)} of {total} page(s) from {Path(file_path).name}")
+    scope = f"{len(images)} selected" if page_indices else str(len(images))
+    logger.info(f"PDF converted: {scope} of {total} page(s) from {Path(file_path).name}")
     return images
 
 
-def build_content_blocks(file_path: str, max_pages: int | None = None) -> list[dict]:
+def build_content_blocks(
+    file_path: str,
+    max_pages: int | None = None,
+    page_indices: list[int] | None = None,
+    zoom: float = 2.0,
+) -> list[dict]:
     """Build Claude message content blocks from an image or PDF file."""
     ext = Path(file_path).suffix.lower()
 
     if ext == ".pdf":
-        pages = _pdf_to_page_images(file_path, max_pages=max_pages)
+        pages = _pdf_to_page_images(
+            file_path, max_pages=max_pages, page_indices=page_indices, zoom=zoom,
+        )
         blocks = [
             {
                 "type": "image",
@@ -136,10 +152,18 @@ def build_content_blocks(file_path: str, max_pages: int | None = None) -> list[d
             for img, media in pages
         ]
         if len(pages) > 1:
+            hint = (
+                f"The above {len(pages)} images are consecutive pages of the SAME document section. "
+                f"Combine information across these pages only — ignore any other document types."
+                if page_indices
+                else f"The above {len(pages)} images are consecutive pages of the SAME document. "
+                     f"Combine information across all pages."
+            )
+            blocks.append({"type": "text", "text": hint})
+        elif page_indices:
             blocks.append({
                 "type": "text",
-                "text": f"The above {len(pages)} images are consecutive pages of the SAME document. "
-                        f"Combine information across all pages.",
+                "text": "Extract from this page only — it is one section of a combined PDF.",
             })
         return blocks
 
@@ -292,10 +316,15 @@ def _as_dict(obj) -> dict:
     raise ValueError(f"Expected a JSON object, got {type(obj).__name__}")
 
 
-def extract_with_claude(file_path: str, prompt: str, api_key: str,
-                        model: str = DEFAULT_MODEL,
-                        max_tokens: int = DEFAULT_MAX_TOKENS,
-                        max_pages: int | None = None) -> dict:
+def extract_with_claude(
+    file_path: str,
+    prompt: str,
+    api_key: str,
+    model: str = DEFAULT_MODEL,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+    max_pages: int | None = None,
+    page_indices: list[int] | None = None,
+) -> dict:
     """
     Send a document (image/PDF) + extraction prompt to Claude, return the parsed dict.
     max_pages caps PDF pages sent (None = all).
@@ -313,7 +342,9 @@ def extract_with_claude(file_path: str, prompt: str, api_key: str,
                               detail=f"Document not found: {file_path}")
 
     try:
-        content = build_content_blocks(file_path, max_pages=max_pages)
+        content = build_content_blocks(
+            file_path, max_pages=max_pages, page_indices=page_indices,
+        )
     except Exception as e:
         raise ExtractionError("The uploaded document could not be read. It may be corrupt "
                               "or password-protected.", detail=f"{type(e).__name__}: {e}")
@@ -363,14 +394,28 @@ def extract_with_claude(file_path: str, prompt: str, api_key: str,
     return data
 
 
-def _gemini_parts(file_path: str, prompt: str, max_pages: int | None = None) -> list[dict]:
+def _gemini_parts(
+    file_path: str,
+    prompt: str,
+    max_pages: int | None = None,
+    page_indices: list[int] | None = None,
+    *,
+    force_images: bool = False,
+    zoom: float = 2.0,
+) -> list[dict]:
     """Build Gemini content parts — prefer native PDF for text PDFs, images for scans."""
     from infrastructure.document_ai.document_profile import is_text_pdf
 
     ext = Path(file_path).suffix.lower()
     parts: list[dict] = []
 
-    if ext == ".pdf" and is_text_pdf(file_path, max_pages=max_pages):
+    use_native_pdf = (
+        ext == ".pdf"
+        and not force_images
+        and page_indices is None
+        and is_text_pdf(file_path, max_pages=max_pages)
+    )
+    if use_native_pdf:
         with open(file_path, "rb") as f:
             raw = f.read()
         parts.append({
@@ -380,15 +425,20 @@ def _gemini_parts(file_path: str, prompt: str, max_pages: int | None = None) -> 
             }
         })
     else:
-        for img, media in _pdf_to_page_images(file_path, max_pages=max_pages) if ext == ".pdf" else []:
-            parts.append({
-                "inline_data": {
-                    "mime_type": media,
-                    "data": base64.standard_b64encode(img).decode("utf-8"),
-                }
-            })
+        if ext == ".pdf":
+            for img, media in _pdf_to_page_images(
+                file_path, max_pages=max_pages, page_indices=page_indices, zoom=zoom,
+            ):
+                parts.append({
+                    "inline_data": {
+                        "mime_type": media,
+                        "data": base64.standard_b64encode(img).decode("utf-8"),
+                    }
+                })
         if ext != ".pdf":
-            blocks = build_content_blocks(file_path, max_pages=max_pages)
+            blocks = build_content_blocks(
+                file_path, max_pages=max_pages, page_indices=page_indices, zoom=zoom,
+            )
             for b in blocks:
                 if b.get("type") == "image":
                     src = b["source"]
@@ -408,6 +458,10 @@ def extract_with_gemini(
     api_key: str,
     model: str = GEMINI_DEFAULT_MODEL,
     max_pages: int | None = None,
+    page_indices: list[int] | None = None,
+    *,
+    force_images: bool = False,
+    zoom: float = 2.0,
 ) -> dict:
     """Gemini Flash vision — fast/cheap for scans and messy layouts."""
     if not api_key:
@@ -418,7 +472,10 @@ def extract_with_gemini(
                               detail=f"Document not found: {file_path}")
 
     name = Path(file_path).name
-    parts = _gemini_parts(file_path, prompt, max_pages=max_pages)
+    parts = _gemini_parts(
+        file_path, prompt, max_pages=max_pages, page_indices=page_indices,
+        force_images=force_images, zoom=zoom,
+    )
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     payload = {
         "contents": [{"parts": parts}],
@@ -476,6 +533,7 @@ def extract_document(
     model: str = DEFAULT_MODEL,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     max_pages: int | None = None,
+    page_indices: list[int] | None = None,
     gemini_api_key: str | None = None,
     text_parser_enabled: bool = False,
     gemini_enabled: bool = True,
@@ -503,7 +561,9 @@ def extract_document(
         gemini_model = getattr(_settings, "GEMINI_MODEL", None) or GEMINI_DEFAULT_MODEL
         try:
             return extract_with_gemini(
-                file_path, prompt, gkey, model=gemini_model, max_pages=max_pages,
+                file_path, prompt, gkey, model=gemini_model,
+                max_pages=max_pages, page_indices=page_indices,
+                force_images=page_indices is not None,
             )
         except ExtractionError as e:
             logger.warning(f"Gemini failed for {name}, falling back: {e.detail}")
@@ -511,7 +571,8 @@ def extract_document(
     if claude_fallback and api_key:
         data = extract_with_claude(
             file_path, prompt, api_key,
-            model=model, max_tokens=max_tokens, max_pages=max_pages,
+            model=model, max_tokens=max_tokens,
+            max_pages=max_pages, page_indices=page_indices,
         )
         data["_extraction_method"] = f"claude:{model}"
         return data
@@ -546,14 +607,24 @@ def extract_with_tiers(
     max_pages: int | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     model: str = DEFAULT_MODEL,
+    page_indices: list[int] | None = None,
+    auto_segment: bool = True,
 ) -> dict:
     """Convenience wrapper — reads tier flags from settings. This is the entry point
     extractors should call instead of extract_with_claude() directly.
+
+    For combined PDFs (CI + PL + BL in one file), auto_segment resolves the relevant
+    page range before extraction when doc_type is bl / invoice / packing / fi / insurance.
 
     Also records a real AI usage event (+ api_calls) for the current metering org.
     """
     from config.settings import settings
     from core.platform_metering import meter_extraction
+
+    seg_meta: dict = {}
+    if auto_segment and page_indices is None and Path(file_path).suffix.lower() == ".pdf":
+        from infrastructure.document_ai.document_segmenter import resolve_page_indices
+        page_indices, seg_meta = resolve_page_indices(file_path, doc_type, api_key)
 
     try:
         data = extract_document(
@@ -564,12 +635,15 @@ def extract_with_tiers(
             model=model,
             max_tokens=max_tokens,
             max_pages=max_pages,
+            page_indices=page_indices,
             gemini_api_key=settings.GEMINI_API_KEY,
             text_parser_enabled=settings.EXTRACTION_TEXT_PARSER_ENABLED,
             gemini_enabled=settings.EXTRACTION_GEMINI_ENABLED,
             claude_fallback=settings.EXTRACTION_CLAUDE_FALLBACK,
             text_min_confidence=settings.EXTRACTION_TEXT_MIN_CONFIDENCE,
         )
+        if seg_meta:
+            data["_segmentation"] = seg_meta
         method = None
         if isinstance(data, dict):
             method = data.get("_extraction_method")

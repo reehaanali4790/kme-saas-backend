@@ -13,9 +13,10 @@ international steel shipment.
 
 IMPORTANT — this file may be a COMBINED document containing several documents
 (Commercial Invoice + Packing List + Bill of Lading), often on separate pages.
-FIRST locate the page whose heading reads "PACKING LIST" (or "PACKING SLIP"/"P/L").
-Extract the line-item table from THAT page only. Do NOT read the invoice table or the
-bill-of-lading / container rider table — those are different documents.
+You are receiving ONLY the Packing List section (the relevant page(s) have already
+been selected). Extract the line-item table from THESE pages only. Do NOT read the
+invoice table or the bill-of-lading / container rider table — those are different documents.
+If the packing page has no HS code, you may take it from a header on the same page only.
 
 Find each field by its label text; DO NOT assume a fixed position. Packing lists come in
 many layouts and the columns vary from document to document — extract whatever is present

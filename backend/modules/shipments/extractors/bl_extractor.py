@@ -35,6 +35,12 @@ non-B/L document).
 
 STEP 2 — if it IS a Bill of Lading, extract the fields below.
 
+IMPORTANT — this file may be a COMBINED document containing several documents
+(Commercial Invoice + Packing List + Bill of Lading), often on separate pages.
+You are receiving ONLY the Bill of Lading section (the relevant page(s) have already
+been selected). Read ALL provided pages before extracting — a B/L often spans a main
+page plus a rider/attachment listing coils or containers.
+
 The document may span multiple pages — read ALL pages before extracting.
 Find each field by searching for its label text anywhere in the document.
 DO NOT assume any fixed layout or position — labels can appear anywhere.
