@@ -53,22 +53,57 @@ def get_entry_attachment_file(entry_id: int, attachment_id: int, db: Session) ->
 # ---------------------------------------------------------------------------
 # Create
 # ---------------------------------------------------------------------------
-def start_partial_gd(into_bond_gd_id: int, user_id: int, db: Session) -> ExBondEntry:
+def start_partial_gd(into_bond_gd_id: int, user_id: int, db: Session) -> dict:
+    """Prepare a new Partial GD draft without creating a database row."""
     gd = get_gd_or_error(into_bond_gd_id, db)
     if (gd.gd_type or "") != "INTO_BOND":
         raise ValidationError(
             "Partial GDs (EB releases) can only be created against an Into-Bond GD."
         )
     _require_into_bond_filed(gd, db)
+    return {"into_bond_gd_id": gd.gd_id, "draft": True}
 
+
+def find_duplicate_gd_number_for_ib_gd(
+    into_bond_gd_id: int,
+    gd_number: Optional[str],
+    db: Session,
+    *,
+    exclude_entry_id: Optional[int] = None,
+) -> Optional[ExBondEntry]:
+    """Check duplicate EB GD number before validate, scoped to an Into-Bond GD."""
+    if not gd_number or not str(gd_number).strip():
+        return None
+    norm = str(gd_number).strip().upper()
+    q = (db.query(ExBondEntry)
+           .filter(ExBondEntry.into_bond_gd_id == into_bond_gd_id,
+                   func.upper(func.btrim(ExBondEntry.gd_number)) == norm))
+    if exclude_entry_id is not None:
+        q = q.filter(ExBondEntry.entry_id != exclude_entry_id)
+    return q.first()
+
+
+def create_partial_gd_entry(into_bond_gd_id: int, user_id: int, db: Session) -> ExBondEntry:
+    gd = get_gd_or_error(into_bond_gd_id, db)
     entry = ExBondEntry(
         into_bond_gd_id=gd.gd_id, shipment_id=gd.shipment_id,
         is_finalized=False, created_by=user_id,
     )
     db.add(entry)
-    db.commit()
-    db.refresh(entry)
+    db.flush()
     return entry
+
+
+def validate_partial_gd_approval_for_ib(
+    into_bond_gd_id: int,
+    data: PartialGdValidateApproval,
+    user_id: int,
+    db: Session,
+) -> ExBondEntry:
+    """Create a Partial GD entry and validate it in one transaction."""
+    get_gd_or_error(into_bond_gd_id, db)
+    entry = create_partial_gd_entry(into_bond_gd_id, user_id, db)
+    return validate_partial_gd_approval(entry.entry_id, data, user_id, db)
 
 
 # ---------------------------------------------------------------------------

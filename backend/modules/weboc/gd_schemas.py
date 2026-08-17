@@ -96,6 +96,17 @@ class GDItemIn(BaseModel):
         return v if isinstance(v, list) else None
 
 
+class GdStagedAttachmentIn(BaseModel):
+    kind: str
+    staged_file: str
+    original_filename: Optional[str] = None
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _upper_kind(cls, v):
+        return (str(v or "")).upper()
+
+
 class GDSave(BaseModel):
     """Used for both create (no gd_id) and update - save_gd serves both, matching
     the original dual-purpose endpoint (see schemas/contracts.py's ContractSave for
@@ -105,6 +116,7 @@ class GDSave(BaseModel):
     staged_file: Optional[str] = None
     original_filename: Optional[str] = None
     raw_extracted_data: Optional[Dict[str, Any]] = None
+    pending_attachments: Optional[List[GdStagedAttachmentIn]] = None
 
     gd_number: Optional[str] = None
     machine_number: Optional[str] = None

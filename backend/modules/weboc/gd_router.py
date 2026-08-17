@@ -252,6 +252,34 @@ def list_attachments(gd_id: int, kind: str = Query(None),
     return [svc.attachment_to_dict(a) for a in svc.list_attachments(gd_id, kind, db)]
 
 
+@router.post("/{gd_id}/attachments/stage")
+async def stage_attachment(
+    gd_id: int,
+    kind: str = Query(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(_can_write),
+):
+    from modules.weboc import services as weboc_svc
+
+    svc.get_gd_or_404(gd_id, db)
+    kind = kind.upper()
+    if kind not in svc.ATTACH_KINDS:
+        raise HTTPException(status_code=400, detail=f"kind must be one of {svc.ATTACH_KINDS}")
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in svc.ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Only JPG, PNG, PDF supported. Got: {ext}")
+
+    contents = await file.read()
+    try:
+        staged_name, _stage_path = weboc_svc.stage_attachment_bytes(contents, file.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"staged_file": staged_name, "original_filename": file.filename, "kind": kind}
+
+
 @router.post("/{gd_id}/attachments")
 def upload_attachment(gd_id: int, kind: str = Query(...),
                             file: UploadFile = File(...),

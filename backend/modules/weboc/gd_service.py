@@ -311,11 +311,18 @@ def save_gd(data: GDSave, db: Session, user_id: int) -> GoodsDeclaration:
 
 def update_gd(gd_id: int, data: GDSave, db: Session, user_id: int) -> GoodsDeclaration:
     from infrastructure.activity.activity_service import log_activity
+    from modules.weboc import services as weboc_svc
 
     gd = get_gd_or_404(gd_id, db)
     apply_gd_fields(gd, data)
     normalize_gd(gd, db)
     replace_items(gd, data.items, db)
+    if data.pending_attachments:
+        for att in data.pending_attachments:
+            weboc_svc.commit_staged_attachment(
+                gd, att.kind, att.staged_file, att.original_filename or "document.pdf",
+                db, user_id, replace=False,
+            )
     recompute_gd_status(gd, db)
     log_activity(db, gd.shipment_id, user_id, "EDIT", doc_type="Goods Declaration")
     db.commit()

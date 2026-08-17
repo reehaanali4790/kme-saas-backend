@@ -53,9 +53,123 @@ def start_partial_gd(
     db: Session = Depends(get_tenant_db),
     current_user: User = Depends(require_min_role("ADMIN", "MANAGER", "OPERATOR")),
 ):
-    entry = pgd.start_partial_gd(into_bond_gd_id, current_user.user_id, db)
-    logger.info(f"Partial GD started: entry_id={entry.entry_id}, into_bond_gd_id={into_bond_gd_id}")
-    return {"success": True, "entry_id": entry.entry_id}
+    out = pgd.start_partial_gd(into_bond_gd_id, current_user.user_id, db)
+    logger.info(f"Partial GD draft opened: into_bond_gd_id={into_bond_gd_id}")
+    return {"success": True, "draft": True, "into_bond_gd_id": out["into_bond_gd_id"]}
+
+
+@partial_gd_router.post("/into-bond/{into_bond_gd_id}/gd-view/upload-and-extract")
+async def partial_gd_view_upload_and_extract_draft(
+    into_bond_gd_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(require_min_role("ADMIN", "MANAGER", "OPERATOR")),
+):
+    ext, filename = _check_ext(file)
+    weboc_svc.get_gd_or_error(into_bond_gd_id, db)
+    file_contents = await file.read()
+    staged_name, stage_path = weboc_svc.stage_attachment_bytes(file_contents, filename)
+
+    extracted, extraction_error = safe_extract(
+        extract_gd_view, stage_path, settings.ANTHROPIC_API_KEY,
+        doc_label=f"Partial GD EB GD View, into_bond_gd_id={into_bond_gd_id}, file={filename}")
+
+    if extraction_error:
+        logger.warning(f"Partial GD draft (IB {into_bond_gd_id}): EB GD View extraction failed — manual entry.")
+        return {
+            "into_bond_gd_id": into_bond_gd_id,
+            "staged_file": staged_name,
+            "original_filename": filename,
+            "is_pdf": ext == ".pdf",
+            "extracted": {},
+            "warnings": [],
+            "extraction_failed": True,
+            "extraction_message": extraction_error,
+        }
+
+    meter_document_accepted(file_path=stage_path)
+    warnings = []
+    if weboc_svc.classify_declaration(extracted.get("declaration_type")) != "EX_BOND" and \
+            weboc_svc.classify_from_gd_number(extracted.get("gd_number")) != "EX_BOND":
+        warnings.append("This document does not look like an Ex-Bond (EB/XB) GD View — please verify.")
+
+    dup = pgd.find_duplicate_gd_number_for_ib_gd(into_bond_gd_id, extracted.get("gd_number"), db)
+    if dup:
+        warnings.append(
+            f"EB GD Number '{extracted.get('gd_number')}' is already recorded on this Into-Bond GD "
+            f"as Partial GD #{dup.entry_id} ({'finalized' if dup.is_finalized else 'draft'}). "
+            f"Validating this one will be blocked as a duplicate."
+        )
+
+    return {
+        "into_bond_gd_id": into_bond_gd_id,
+        "staged_file": staged_name,
+        "original_filename": filename,
+        "is_pdf": ext == ".pdf",
+        "extracted": extracted,
+        "warnings": warnings,
+    }
+
+
+@partial_gd_router.post("/into-bond/{into_bond_gd_id}/item-details/upload-and-extract")
+async def partial_gd_item_details_upload_and_extract_draft(
+    into_bond_gd_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(require_min_role("ADMIN", "MANAGER", "OPERATOR")),
+):
+    ext, filename = _check_ext(file)
+    weboc_svc.get_gd_or_error(into_bond_gd_id, db)
+    file_contents = await file.read()
+    staged_name, stage_path = weboc_svc.stage_attachment_bytes(file_contents, filename)
+
+    extracted, extraction_error = safe_extract(
+        extract_item_details, stage_path, settings.ANTHROPIC_API_KEY,
+        doc_label=f"Partial GD Item Details, into_bond_gd_id={into_bond_gd_id}, file={filename}")
+
+    if extraction_error:
+        logger.warning(f"Partial GD draft (IB {into_bond_gd_id}): Item Details extraction failed — manual entry.")
+        return {
+            "into_bond_gd_id": into_bond_gd_id,
+            "staged_file": staged_name,
+            "original_filename": filename,
+            "is_pdf": ext == ".pdf",
+            "extracted": {"items": []},
+            "warnings": [],
+            "extraction_failed": True,
+            "extraction_message": extraction_error,
+        }
+
+    meter_document_accepted(file_path=stage_path)
+    warnings = []
+    items = extracted.get("items") or []
+    if items and not any(it.get("sro_no") or it.get("quota_reference") for it in items):
+        warnings.append("No SRO / quota reference was found on any item in this document.")
+
+    return {
+        "into_bond_gd_id": into_bond_gd_id,
+        "staged_file": staged_name,
+        "original_filename": filename,
+        "is_pdf": ext == ".pdf",
+        "extracted": extracted,
+        "warnings": warnings,
+    }
+
+
+@partial_gd_router.post("/into-bond/{into_bond_gd_id}/validate-approval")
+def validate_partial_gd_approval_draft(
+    into_bond_gd_id: int,
+    data: PartialGdValidateApproval,
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(require_min_role("ADMIN", "MANAGER", "OPERATOR")),
+):
+    entry = pgd.validate_partial_gd_approval_for_ib(
+        into_bond_gd_id, data, current_user.user_id, db)
+    gd = weboc_svc.get_gd_or_error(entry.into_bond_gd_id, db)
+    logger.info(f"Partial GD validated (new entry): entry_id={entry.entry_id}, approval_id={entry.approval_id}, "
+                f"qty={entry.quantity_mt}")
+    return {"success": True, "entry_id": entry.entry_id, "is_finalized": True,
+            "bond": bond_summary(gd, db)}
 
 
 @partial_gd_router.post("/{entry_id}/gd-view/upload-and-extract")

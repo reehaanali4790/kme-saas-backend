@@ -298,4 +298,6 @@ os.makedirs(os.path.join(settings.UPLOAD_DIR, "contract_documents"), exist_ok=Tr
 os.makedirs(os.path.join(settings.UPLOAD_DIR, "contract_documents", "_staged"), exist_ok=True)
 os.makedirs(os.path.join(settings.UPLOAD_DIR, "lc_documents"), exist_ok=True)
 os.makedirs(os.path.join(settings.UPLOAD_DIR, "lc_documents", "_staged"), exist_ok=True)
+os.makedirs(os.path.join(settings.UPLOAD_DIR, "shipment_documents"), exist_ok=True)
+os.makedirs(os.path.join(settings.UPLOAD_DIR, "shipment_documents", "_staged"), exist_ok=True)
 os.makedirs("./logs", exist_ok=True)
