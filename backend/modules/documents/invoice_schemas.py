@@ -22,7 +22,7 @@ reject that input and silently keep the prior value. Broader acceptance only.
 """
 from datetime import date
 from decimal import Decimal
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, field_validator
 
@@ -64,6 +64,9 @@ class InvoiceLineItemIn(BaseModel):
 class InvoiceSave(BaseModel):
     invoice_id: Optional[int] = None
     shipment_id: Optional[int] = None
+    staged_file: Optional[str] = None
+    original_filename: Optional[str] = None
+    raw_extracted_data: Optional[Dict[str, Any]] = None
 
     invoice_number: Optional[str] = None
     documentary_credit_number: Optional[str] = None

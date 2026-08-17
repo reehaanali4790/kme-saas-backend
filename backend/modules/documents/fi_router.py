@@ -4,7 +4,6 @@ FI attaches to a shipment. Carries the HS code (cross-checked) and the expiry da
 (= last date to file the GD), which drives the FI_EXPIRY alert.
 """
 
-import os
 import logging
 from pathlib import Path
 
@@ -25,12 +24,14 @@ from modules.documents import fi_service as svc
 from modules.documents.fi_schemas import FISave
 from modules.workflow.helpers import check_gate
 from modules.workflow.constants import ACTION_UPLOAD_FI
+from utils.staging import stage_upload
 
 logger = logging.getLogger("uvicorn")
 
 router = APIRouter(prefix="/api/fi", tags=["Financial Instruments"])
 
 ALLOWED_EXTENSIONS = svc.ALLOWED_EXTENSIONS
+STAGE_SUBDIR = svc.STAGE_SUBDIR
 
 _can_write = require_min_role("ADMIN", "MANAGER", "OPERATOR")
 
@@ -60,56 +61,50 @@ def upload_and_extract(
     if not shipment:
         raise HTTPException(status_code=404, detail="Shipment not found")
 
-    # One FI per shipment — reuse the existing record instead of piling up
-    # duplicate / abandoned-placeholder rows when a document is (re-)uploaded.
-    fi = (db.query(FinancialInstrument)
-            .filter(FinancialInstrument.shipment_id == shipment_id)
-            .order_by(FinancialInstrument.fi_id.desc()).first())
-    is_replace = fi is not None
-    if fi is None:
-        fi = FinancialInstrument(shipment_id=shipment_id, lc_id=shipment.lc_id,
-                                 source="UPLOADED", status="PENDING_REVIEW",
-                                 created_by=current_user.user_id)
-        db.add(fi)
-        db.flush()
+    existing = (db.query(FinancialInstrument)
+                  .filter(FinancialInstrument.shipment_id == shipment_id)
+                  .order_by(FinancialInstrument.fi_id.desc()).first())
+    existing_dict = svc.to_dict(existing) if existing else {}
+    existing_id = existing.fi_id if existing else None
 
-    # Keep the old document until the new one has actually been extracted.
-    old_path = fi.document_path
-    fi.document_path = svc.save_file(file, fi.fi_id)
-    fi.document_filename = file.filename
-    db.commit()
-    meter_document_accepted(file_path=fi.document_path)
+    try:
+        staged_name, stage_path, _ = stage_upload(file, STAGE_SUBDIR, ALLOWED_EXTENSIONS)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     extracted, extraction_error = safe_extract(
-        extract_fi, fi.document_path, settings.ANTHROPIC_API_KEY,
-        doc_label=f"Financial Instrument, fi_id={fi.fi_id}, file={file.filename}")
+        extract_fi, stage_path, settings.ANTHROPIC_API_KEY,
+        doc_label=f"Financial Instrument, shipment_id={shipment_id}, file={file.filename}")
 
     if extraction_error:
-        db.commit()
-        logger.warning(f"FI {fi.fi_id}: extraction failed, falling back to manual entry "
-                       f"(previous data preserved, replace={is_replace}).")
-        return {"fi_id": fi.fi_id, "document_filename": fi.document_filename,
-                "is_pdf": ext == ".pdf",
-                "extracted": svc.to_dict(fi) if is_replace else {},
-                "extraction_failed": True, "extraction_message": extraction_error,
-                "had_previous_data": is_replace, "warnings": []}
+        logger.warning(
+            "FI shipment=%s: extraction failed, staged for manual entry (existing=%s).",
+            shipment_id, existing_id,
+        )
+        return {
+            "staged_file": staged_name,
+            "original_filename": file.filename,
+            "existing_id": existing_id,
+            "is_pdf": ext == ".pdf",
+            "extracted": existing_dict,
+            "extraction_failed": True,
+            "extraction_message": extraction_error,
+            "had_previous_data": existing is not None,
+            "warnings": [],
+        }
 
-    if old_path and old_path != fi.document_path and os.path.exists(old_path):
-        try:
-            os.remove(old_path)
-        except OSError:
-            pass
-    fi.status = "PENDING_REVIEW"
-    fi.source = "UPLOADED"
-    fi.updated_by = current_user.user_id
-    fi.raw_extracted_data = extracted
-    db.commit()
-
+    meter_document_accepted(file_path=stage_path)
     warnings = svc.check_expiry_warning(extracted)
 
-    return {"fi_id": fi.fi_id, "document_filename": fi.document_filename,
-            "is_pdf": ext == ".pdf", "extracted": extracted, "warnings": warnings,
-            "extraction_failed": False}
+    return {
+        "staged_file": staged_name,
+        "original_filename": file.filename,
+        "existing_id": existing_id,
+        "is_pdf": ext == ".pdf",
+        "extracted": extracted,
+        "warnings": warnings,
+        "extraction_failed": False,
+    }
 
 
 from modules.lc_creation.helpers.shipment_validator import validate_shipment

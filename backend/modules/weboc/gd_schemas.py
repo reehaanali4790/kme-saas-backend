@@ -15,7 +15,7 @@ See modules/weboc/gd_service.py's apply_gd_fields() for where each rule is enfor
 """
 from datetime import date
 from decimal import Decimal
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, field_validator
 
@@ -102,6 +102,9 @@ class GDSave(BaseModel):
     the same pattern)."""
     gd_id: Optional[int] = None
     shipment_id: Optional[int] = None
+    staged_file: Optional[str] = None
+    original_filename: Optional[str] = None
+    raw_extracted_data: Optional[Dict[str, Any]] = None
 
     gd_number: Optional[str] = None
     machine_number: Optional[str] = None

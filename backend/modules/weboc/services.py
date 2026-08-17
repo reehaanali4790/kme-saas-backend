@@ -13,8 +13,9 @@ from models.database_models import (
     GoodsDeclaration, GDAttachment, GDItem, ExBondEntry, GdKgtlWeighment, Shipment
 )
 from modules.weboc.gd_service import (
-    recompute_gd_status, ATTACH_DIR, ALLOWED_EXTENSIONS
+    recompute_gd_status, ATTACH_DIR, ATTACH_STAGE_SUBDIR, ALLOWED_EXTENSIONS
 )
+from utils.staging import stage_bytes, staged_dir
 from infrastructure.activity.activity_service import log_activity
 from infrastructure.audit.audit_service import log_audit
 from utils.uploads import safe_upload_path
@@ -95,6 +96,50 @@ def get_or_create_gd_for_shipment(shipment: Shipment, db: Session, user_id: int)
         db.add(gd)
         db.flush()
     return gd
+
+
+def resolve_gd_for_save(
+    gd_id: Optional[int],
+    shipment_id: Optional[int],
+    db: Session,
+    user_id: int,
+) -> GoodsDeclaration:
+    if gd_id:
+        return get_gd_or_error(gd_id, db)
+    if shipment_id:
+        shipment = get_shipment_or_error(shipment_id, db)
+        return get_or_create_gd_for_shipment(shipment, db, user_id)
+    raise ValidationError("gd_id or shipment_id is required")
+
+
+def stage_attachment_bytes(file_contents: bytes, filename: str) -> tuple[str, str]:
+    return stage_bytes(file_contents, ATTACH_STAGE_SUBDIR, ALLOWED_EXTENSIONS, filename, perm_dir=ATTACH_DIR)
+
+
+def commit_staged_attachment(
+    gd: GoodsDeclaration,
+    kind: str,
+    staged_file: str,
+    original_filename: str,
+    db: Session,
+    user_id: int,
+    *,
+    replace: bool = True,
+) -> GDAttachment:
+    stage_path = os.path.join(
+        staged_dir(ATTACH_STAGE_SUBDIR, ATTACH_DIR), os.path.basename(staged_file))
+    if not os.path.exists(stage_path):
+        raise ValidationError("Staged document not found — please re-upload the file.")
+    with open(stage_path, "rb") as f:
+        contents = f.read()
+    try:
+        os.remove(stage_path)
+    except OSError:
+        pass
+    orig = original_filename or "document.pdf"
+    if replace:
+        return replace_gd_attachment(gd, kind, orig, contents, db, user_id)
+    return add_gd_attachment(gd, kind, orig, contents, db, user_id)
 
 
 def replace_gd_attachment(gd: GoodsDeclaration, kind: str, filename: str, file_contents: bytes,
@@ -403,8 +448,13 @@ def apply_into_bond_gd(gd: GoodsDeclaration, data: IntoBondGDSave, db: Session):
 # ---------------------------------------------------------------------------
 # API orchestration CRUD methods
 # ---------------------------------------------------------------------------
-def save_gd_view(gd_id: int, data: GDViewSave, user_id: int, db: Session) -> GoodsDeclaration:
-    gd = get_gd_or_error(gd_id, db)
+def save_gd_view(data: GDViewSave, user_id: int, db: Session) -> GoodsDeclaration:
+    gd = resolve_gd_for_save(data.gd_id, data.shipment_id, db, user_id)
+    if data.staged_file:
+        commit_staged_attachment(
+            gd, "GD_VIEW", data.staged_file, data.original_filename or "gd_view.pdf",
+            db, user_id,
+        )
     apply_gd_view(gd, data, db)
     recompute_gd_status(gd, db)
     log_activity(db, gd.shipment_id, user_id, "UPLOAD", doc_type="GD View")
@@ -413,8 +463,13 @@ def save_gd_view(gd_id: int, data: GDViewSave, user_id: int, db: Session) -> Goo
     return gd
 
 
-def save_item_details(gd_id: int, data: ItemDetailsSave, user_id: int, db: Session) -> GoodsDeclaration:
-    gd = get_gd_or_error(gd_id, db)
+def save_item_details(data: ItemDetailsSave, user_id: int, db: Session) -> GoodsDeclaration:
+    gd = resolve_gd_for_save(data.gd_id, data.shipment_id, db, user_id)
+    if data.staged_file:
+        commit_staged_attachment(
+            gd, "ITEM_DETAILS", data.staged_file, data.original_filename or "item_details.pdf",
+            db, user_id,
+        )
     apply_item_details(gd, data, db)
     recompute_gd_status(gd, db)
     log_activity(db, gd.shipment_id, user_id, "UPLOAD", doc_type="Item Details")
@@ -423,10 +478,15 @@ def save_item_details(gd_id: int, data: ItemDetailsSave, user_id: int, db: Sessi
     return gd
 
 
-def save_into_bond_gd(gd_id: int, data: IntoBondGDSave, user_id: int, db: Session) -> GoodsDeclaration:
-    gd = get_gd_or_error(gd_id, db)
+def save_into_bond_gd(data: IntoBondGDSave, user_id: int, db: Session) -> GoodsDeclaration:
+    gd = resolve_gd_for_save(data.gd_id, data.shipment_id, db, user_id)
     if not gd.gd_view_uploaded and not gd.gd_number:
         raise ValidationError("Upload the GD View before the Into-Bond GD.")
+    if data.staged_file:
+        commit_staged_attachment(
+            gd, "INTO_BOND_GD", data.staged_file, data.original_filename or "into_bond_gd.pdf",
+            db, user_id,
+        )
     apply_into_bond_gd(gd, data, db)
     recompute_gd_status(gd, db)
     log_activity(db, gd.shipment_id, user_id, "UPLOAD", doc_type="Into-Bond GD")
@@ -488,8 +548,8 @@ def _require_into_bond_filed(gd: GoodsDeclaration, db: Session) -> None:
         )
 
 
-def save_ex_bond_gd(gd_id: int, data: ExBondGDSave, user_id: int, db: Session) -> ExBondEntry:
-    gd = get_gd_or_error(gd_id, db)
+def save_ex_bond_gd(data: ExBondGDSave, user_id: int, db: Session) -> ExBondEntry:
+    gd = resolve_gd_for_save(data.gd_id, data.shipment_id, db, user_id)
     if (gd.gd_type or "") != "INTO_BOND":
         raise ValidationError("Ex-Bond GDs apply only to Into-Bond shipments.")
     _require_into_bond_filed(gd, db)
@@ -508,6 +568,12 @@ def save_ex_bond_gd(gd_id: int, data: ExBondGDSave, user_id: int, db: Session) -
         )
 
     att_id = _int(data_dict.get("attachment_id"))
+    if data.staged_file:
+        att = commit_staged_attachment(
+            gd, "EX_BOND_GD", data.staged_file, data.original_filename or "ex_bond_gd.pdf",
+            db, user_id, replace=False,
+        )
+        att_id = att.attachment_id
     if att_id:
         dup = db.query(ExBondEntry).filter(
             ExBondEntry.into_bond_gd_id == gd.gd_id,

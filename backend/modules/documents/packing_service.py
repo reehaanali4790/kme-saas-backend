@@ -14,9 +14,11 @@ from core.exceptions import NotFoundError
 from models.database_models import PackingList, PackingLineItem, Shipment
 from modules.documents.packing_schemas import PackingSave, STR_FIELDS, DEC_FIELDS
 from utils.uploads import safe_upload_path
+from utils.staging import promote_staged, replace_document_path
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
 UPLOAD_DIR = os.path.join(settings.UPLOAD_DIR, "packing_documents")
+STAGE_SUBDIR = "packing_documents"
 
 
 def save_file(upload: UploadFile, packing_id: int) -> str:
@@ -106,17 +108,48 @@ def get_packing_or_404(db: Session, packing_id: int, with_items: bool = False) -
     return p
 
 
-def save_packing(db: Session, data: PackingSave, user_id: int) -> PackingList:
+def apply_staged_document(p: PackingList, data: PackingSave):
+    if not data.staged_file:
+        return
+    dest, orig = promote_staged(
+        STAGE_SUBDIR, data.staged_file, p.packing_id,
+        data.original_filename, ALLOWED_EXTENSIONS,
+    )
+    if dest:
+        replace_document_path(p, dest, orig)
+    if data.raw_extracted_data is not None:
+        p.raw_extracted_data = data.raw_extracted_data
+
+
+def _resolve_packing(db: Session, data: PackingSave, user_id: int) -> PackingList:
     if data.packing_id:
         p = db.query(PackingList).filter(PackingList.packing_id == data.packing_id).first()
         if not p:
-            raise NotFoundError("Packing placeholder not found")
-    else:
-        p = PackingList(shipment_id=data.shipment_id, source="MANUAL", created_by=user_id)
-        db.add(p)
-        db.flush()
+            raise NotFoundError("Packing list not found")
+        return p
+
+    if data.shipment_id:
+        p = (db.query(PackingList)
+             .filter(PackingList.shipment_id == data.shipment_id)
+             .order_by(PackingList.packing_id.desc()).first())
+        if p:
+            return p
+
+    p = PackingList(
+        shipment_id=data.shipment_id,
+        source="UPLOADED" if data.staged_file else "MANUAL",
+        created_by=user_id,
+    )
+    db.add(p)
+    db.flush()
+    return p
+
+
+def save_packing(db: Session, data: PackingSave, user_id: int) -> PackingList:
+    p = _resolve_packing(db, data, user_id)
 
     apply_fields(p, data, user_id)
+    apply_staged_document(p, data)
     p.status = "VERIFIED"
     db.flush()
     replace_line_items(p, data.line_items, db)

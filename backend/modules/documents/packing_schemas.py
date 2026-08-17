@@ -12,7 +12,7 @@ would have rejected it and kept the prior value.
 """
 from datetime import date
 from decimal import Decimal
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, field_validator
 
@@ -59,6 +59,9 @@ class PackingLineItemIn(BaseModel):
 class PackingSave(BaseModel):
     packing_id: Optional[int] = None
     shipment_id: Optional[int] = None
+    staged_file: Optional[str] = None
+    original_filename: Optional[str] = None
+    raw_extracted_data: Optional[Dict[str, Any]] = None
 
     packing_number: Optional[str] = None
     goods_description: Optional[str] = None

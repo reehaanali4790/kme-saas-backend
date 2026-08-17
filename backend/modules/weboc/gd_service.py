@@ -19,10 +19,13 @@ from models.database_models import GDAttachment, GDItem, GoodsDeclaration, Shipm
 from modules.weboc.gd_schemas import GDItemIn, GDSave, LevyIn
 from infrastructure.normalization.normalization_service import normalize_goods_declaration
 from utils.uploads import safe_upload_path
+from utils.staging import promote_staged, replace_document_path
 from core.platform_metering import enforce_document_quota, meter_document_accepted
 
 UPLOAD_DIR = os.path.join(settings.UPLOAD_DIR, "gd_documents")
 ATTACH_DIR = os.path.join(settings.UPLOAD_DIR, "gd_attachments")
+STAGE_SUBDIR = "gd_documents"
+ATTACH_STAGE_SUBDIR = "gd_attachments"
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
 
 GD_TYPES = ("HOME_CONSUMPTION", "INTO_BOND", "EX_BOND")
@@ -246,17 +249,43 @@ def get_gd_or_404(gd_id: int, db: Session) -> GoodsDeclaration:
     return gd
 
 
+def apply_staged_document(gd: GoodsDeclaration, data: GDSave):
+    if not data.staged_file:
+        return
+    dest, orig = promote_staged(
+        STAGE_SUBDIR, data.staged_file, gd.gd_id,
+        data.original_filename, ALLOWED_EXTENSIONS,
+    )
+    if dest:
+        replace_document_path(gd, dest, orig)
+    if data.raw_extracted_data is not None:
+        gd.raw_extracted_data = data.raw_extracted_data
+
+
 def get_or_create_placeholder(data: GDSave, db: Session, user_id: int) -> Tuple[GoodsDeclaration, bool]:
     """Returns (gd, is_new)."""
     if data.gd_id:
         gd = db.query(GoodsDeclaration).filter(GoodsDeclaration.gd_id == data.gd_id).first()
         if not gd:
-            raise NotFoundError("GD placeholder not found")
+            raise NotFoundError("GD not found")
         return gd, False
+
+    if data.shipment_id:
+        gd = (db.query(GoodsDeclaration)
+              .filter(GoodsDeclaration.shipment_id == data.shipment_id)
+              .order_by(GoodsDeclaration.gd_id.desc()).first())
+        if gd:
+            return gd, False
+
     shipment = (db.query(Shipment).filter(Shipment.shipment_id == data.shipment_id).first()
                 if data.shipment_id else None)
-    gd = GoodsDeclaration(shipment_id=data.shipment_id, lc_id=shipment.lc_id if shipment else None,
-                          source="MANUAL", status="FILED", created_by=user_id)
+    gd = GoodsDeclaration(
+        shipment_id=data.shipment_id,
+        lc_id=shipment.lc_id if shipment else None,
+        source="UPLOADED" if data.staged_file else "MANUAL",
+        status="FILED",
+        created_by=user_id,
+    )
     db.add(gd)
     db.flush()
     return gd, True
@@ -268,6 +297,7 @@ def save_gd(data: GDSave, db: Session, user_id: int) -> GoodsDeclaration:
     gd, _is_new = get_or_create_placeholder(data, db, user_id)
     apply_gd_fields(gd, data)
     normalize_gd(gd, db)
+    apply_staged_document(gd, data)
     replace_items(gd, data.items, db)
     # "Final GD" verify-save (from the WeBOC tab's AI extract flow) marks the GD Released.
     if data.final_gd:

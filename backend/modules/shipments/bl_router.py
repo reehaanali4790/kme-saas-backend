@@ -24,7 +24,7 @@ from infrastructure.document_ai.document_ai import ExtractionError
 from modules.shipments import bl_service as svc
 from modules.shipments.bl_schemas import BLLinkLC, BLSave, BLStatusUpdate
 from modules.shipments.container_detention_service import resolve_bl_type
-from utils.uploads import safe_upload_path, tenant_upload_dir
+from utils.staging import staged_dir
 
 logger = logging.getLogger("uvicorn")
 
@@ -34,6 +34,7 @@ ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
 
 
 def _bl_upload_dir(tenant: TenantContext) -> str:
+    from utils.uploads import tenant_upload_dir
     return tenant_upload_dir(settings.UPLOAD_DIR, tenant.schema_name, "bl_documents")
 
 # Mutations require OPERATOR+ - VIEWER can read BLs but not create/edit/delete them.
@@ -180,17 +181,15 @@ def upload_and_extract(
     # Quota check only — count the doc after the file is actually accepted.
     enforce_document_quota(tenant.organization_id)
 
-    # If created within a shipment, inherit the shipment + its LC
-    shipment_lc_id = None
+    # If created within a shipment, verify it exists (shipment_id/lc_id applied on save).
     if shipment_id:
         sh = db.query(Shipment).filter(Shipment.shipment_id == shipment_id).first()
         if not sh:
             raise HTTPException(status_code=404, detail="Shipment not found")
-        shipment_lc_id = sh.lc_id
 
     # Save to a TEMP file and verify it's actually a Bill of Lading BEFORE touching the
     # shipment's existing BL — so a wrong document (GD, IGM, invoice, ...) is rejected
-    # without overwriting good data.
+    # without overwriting good data. Nothing is written to the database here.
     bl_dir = _bl_upload_dir(tenant)
     os.makedirs(bl_dir, exist_ok=True)
     tmp_path = os.path.join(bl_dir, f"_tmp_{uuid.uuid4().hex}{ext}")
@@ -221,72 +220,38 @@ def upload_and_extract(
             detail=f"This file does not look like a Bill of Lading — it appears to be {detected}. "
                    f"Please upload a Bill of Lading.")
 
-    # Valid BL — pick the record this document belongs to and move the file in.
-    # Reuse priority (so the same BL number never spawns a parallel row that would
-    # later collide on the duplicate-number guard):
-    #   1) An existing BL with the SAME number — re-uploading a known BL: overwrite
-    #      it (and relink it to this shipment) instead of creating a duplicate.
-    #   2) The shipment's existing BL placeholder.
-    #   3) A brand-new row.
     incoming_number = (extracted.get("bl_number") or "").strip()
+    existing_bl_id = None
 
-    bl = None
     if incoming_number:
-        bl = (db.query(BillOfLading)
-                .filter(func.upper(BillOfLading.bl_number) == incoming_number.upper())
-                .order_by(BillOfLading.bl_id.desc()).first())
+        match = (db.query(BillOfLading)
+                   .filter(func.upper(BillOfLading.bl_number) == incoming_number.upper())
+                   .order_by(BillOfLading.bl_id.desc()).first())
+        if match:
+            existing_bl_id = match.bl_id
 
-    shipment_bl = None
-    if shipment_id:
+    if existing_bl_id is None and shipment_id:
         shipment_bl = (db.query(BillOfLading)
-                .filter(BillOfLading.shipment_id == shipment_id)
-                .order_by(BillOfLading.bl_id.desc()).first())
-    if bl is None:
-        bl = shipment_bl
+                         .filter(BillOfLading.shipment_id == shipment_id)
+                         .order_by(BillOfLading.bl_id.desc()).first())
+        if shipment_bl:
+            existing_bl_id = shipment_bl.bl_id
 
-    if bl is None:
-        bl = BillOfLading(
-            source="UPLOADED", status="PENDING_REVIEW",
-            shipment_id=shipment_id, lc_id=shipment_lc_id,
-            created_by=current_user.user_id,
-        )
-        db.add(bl)
-        db.flush()
-    else:
-        _safe_remove(bl.document_path)
-        bl.status = "PENDING_REVIEW"
-        bl.source = "UPLOADED"
-        bl.updated_by = current_user.user_id
-        # Relink to the shipment we're uploading under (handles re-uploading a BL
-        # that previously lived standalone or on another shipment).
-        if shipment_id:
-            bl.shipment_id = shipment_id
-            if shipment_lc_id and not bl.lc_id:
-                bl.lc_id = shipment_lc_id
-        # If we matched by number but the shipment also had a separate *empty*
-        # placeholder, drop it so the shipment isn't left with a dangling duplicate.
-        if shipment_bl is not None and shipment_bl.bl_id != bl.bl_id \
-                and not (shipment_bl.bl_number or "").strip():
-            _safe_remove(shipment_bl.document_path)
-            db.delete(shipment_bl)
-        db.flush()
+    stage_root = staged_dir("bl_documents", bl_dir)
+    os.makedirs(stage_root, exist_ok=True)
+    staged_name = f"{uuid.uuid4().hex}{ext}"
+    stage_path = os.path.join(stage_root, staged_name)
+    os.replace(tmp_path, stage_path)
 
-    stored_path = safe_upload_path(bl_dir, bl.bl_id, file.filename, ALLOWED_EXTENSIONS)
-    os.replace(tmp_path, stored_path)
-    bl.document_filename = file.filename
-    bl.document_path = stored_path
-    bl.raw_extracted_data = extracted
-    bl.bl_type = resolve_bl_type(extracted, bl, db)
-    extracted["bl_type"] = bl.bl_type
-    db.commit()
-    db.refresh(bl)
+    meter_document_accepted(tenant.organization_id, file_path=stage_path)
 
-    # Real metering: document accepted + storage. AI event already recorded by extract_with_tiers.
-    meter_document_accepted(tenant.organization_id, file_path=stored_path)
+    bl_type = resolve_bl_type(extracted, None, db)
+    extracted["bl_type"] = bl_type
 
     return {
-        "bl_id": bl.bl_id,
-        "document_filename": bl.document_filename,
+        "staged_file": staged_name,
+        "original_filename": file.filename,
+        "existing_bl_id": existing_bl_id,
         "extracted": extracted,
         "is_pdf": ext == ".pdf",
     }
@@ -302,9 +267,10 @@ from modules.lc_creation.helpers.shipment_validator import validate_shipment
 def create_bl(
     data: BLSave,
     db: Session = Depends(get_tenant_db),
+    tenant: TenantContext = Depends(get_tenant_context),
     current_user: User = Depends(_can_write),
 ):
-    bl = svc.create_bl(data, db, current_user.user_id)
+    bl = svc.create_bl(data, db, current_user.user_id, upload_dir=_bl_upload_dir(tenant))
     if bl.shipment_id:
         validate_shipment(bl.shipment_id, db)
     logger.info(f"BL created: bl_id={bl.bl_id}, bl_number={bl.bl_number}, by={current_user.username}")

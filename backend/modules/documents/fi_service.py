@@ -13,9 +13,11 @@ from core.exceptions import NotFoundError
 from models.database_models import FinancialInstrument, Shipment
 from modules.documents.fi_schemas import FISave, STR_FIELDS, DATE_FIELDS, DEC_FIELDS
 from utils.uploads import safe_upload_path
+from utils.staging import promote_staged, replace_document_path
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
 UPLOAD_DIR = os.path.join(settings.UPLOAD_DIR, "fi_documents")
+STAGE_SUBDIR = "fi_documents"
 
 
 def save_file(upload: UploadFile, fi_id: int) -> str:
@@ -81,22 +83,52 @@ def get_fi_or_404(db: Session, fi_id: int) -> FinancialInstrument:
     return fi
 
 
-def save_fi(db: Session, data: FISave, user_id: int) -> FinancialInstrument:
+def apply_staged_document(fi: FinancialInstrument, data: FISave):
+    if not data.staged_file:
+        return
+    dest, orig = promote_staged(
+        STAGE_SUBDIR, data.staged_file, fi.fi_id,
+        data.original_filename, ALLOWED_EXTENSIONS,
+    )
+    if dest:
+        replace_document_path(fi, dest, orig)
+    if data.raw_extracted_data is not None:
+        fi.raw_extracted_data = data.raw_extracted_data
+
+
+def _resolve_fi(db: Session, data: FISave, user_id: int) -> FinancialInstrument:
     if data.fi_id:
         fi = db.query(FinancialInstrument).filter(FinancialInstrument.fi_id == data.fi_id).first()
         if not fi:
-            raise NotFoundError("FI placeholder not found")
-    else:
-        shipment = (db.query(Shipment).filter(Shipment.shipment_id == data.shipment_id).first()
-                    if data.shipment_id else None)
-        fi = FinancialInstrument(shipment_id=data.shipment_id,
-                                 lc_id=shipment.lc_id if shipment else None,
-                                 source="MANUAL", status="PENDING_REVIEW",
-                                 created_by=user_id)
-        db.add(fi)
-        db.flush()
+            raise NotFoundError("FI not found")
+        return fi
+
+    if data.shipment_id:
+        fi = (db.query(FinancialInstrument)
+              .filter(FinancialInstrument.shipment_id == data.shipment_id)
+              .order_by(FinancialInstrument.fi_id.desc()).first())
+        if fi:
+            return fi
+
+    shipment = db.query(Shipment).filter(Shipment.shipment_id == data.shipment_id).first() \
+        if data.shipment_id else None
+    fi = FinancialInstrument(
+        shipment_id=data.shipment_id,
+        lc_id=shipment.lc_id if shipment else None,
+        source="UPLOADED" if data.staged_file else "MANUAL",
+        status="PENDING_REVIEW",
+        created_by=user_id,
+    )
+    db.add(fi)
+    db.flush()
+    return fi
+
+
+def save_fi(db: Session, data: FISave, user_id: int) -> FinancialInstrument:
+    fi = _resolve_fi(db, data, user_id)
 
     apply_fi_fields(fi, data, user_id)
+    apply_staged_document(fi, data)
     if not fi.status or fi.status == "PENDING_REVIEW":
         fi.status = "VERIFIED"
     return fi

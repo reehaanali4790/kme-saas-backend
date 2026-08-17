@@ -67,69 +67,56 @@ def upload_and_extract(
     if not shipment:
         raise HTTPException(status_code=404, detail="Shipment not found")
 
-    # One GD per shipment — reuse the existing record instead of piling up
-    # duplicate / abandoned rows when a document is (re-)uploaded.
-    gd = (db.query(GoodsDeclaration)
-            .filter(GoodsDeclaration.shipment_id == shipment_id)
-            .order_by(GoodsDeclaration.gd_id.desc()).first())
-    is_replace = gd is not None
-    if gd is None:
-        gd = GoodsDeclaration(shipment_id=shipment_id, lc_id=shipment.lc_id,
-                              source="UPLOADED", status="FILED", created_by=current_user.user_id)
-        db.add(gd)
-        db.flush()
+    existing = (db.query(GoodsDeclaration)
+                  .filter(GoodsDeclaration.shipment_id == shipment_id)
+                  .order_by(GoodsDeclaration.gd_id.desc()).first())
+    existing_dict = svc.to_response(existing, db) if existing else {}
+    existing_id = existing.gd_id if existing else None
 
-    # Keep the old document + the GD's existing columns/items until the new document has
-    # actually been extracted, so a failed extraction can't wipe a filed GD.
-    old_path = gd.document_path
-    gd.document_path = svc.save_file(file, gd.gd_id)
-    gd.document_filename = file.filename
-    db.commit()
-    meter_document_accepted(file_path=gd.document_path)
+    try:
+        from utils.staging import stage_upload
+        staged_name, stage_path, _ = stage_upload(file, svc.STAGE_SUBDIR, ALLOWED_EXTENSIONS)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     extracted, extraction_error = safe_extract(
-        extract_gd, gd.document_path, settings.ANTHROPIC_API_KEY,
-        doc_label=f"Goods Declaration, gd_id={gd.gd_id}, file={file.filename}")
+        extract_gd, stage_path, settings.ANTHROPIC_API_KEY,
+        doc_label=f"Goods Declaration, shipment_id={shipment_id}, file={file.filename}")
 
     if extraction_error:
-        db.commit()
-        logger.warning(f"GD {gd.gd_id}: extraction failed, falling back to manual entry "
-                       f"(previous data preserved, replace={is_replace}).")
-        return {"gd_id": gd.gd_id, "document_filename": gd.document_filename,
-                "is_pdf": ext == ".pdf",
-                "extracted": svc.to_response(gd) if is_replace else {}, "warnings": [],
-                "extraction_failed": True, "extraction_message": extraction_error,
-                "had_previous_data": is_replace}
+        logger.warning(
+            "GD shipment=%s: extraction failed, staged for manual entry (existing=%s).",
+            shipment_id, existing_id,
+        )
+        return {
+            "staged_file": staged_name,
+            "original_filename": file.filename,
+            "existing_id": existing_id,
+            "is_pdf": ext == ".pdf",
+            "extracted": existing_dict,
+            "warnings": [],
+            "extraction_failed": True,
+            "extraction_message": extraction_error,
+            "had_previous_data": existing is not None,
+        }
 
-    if old_path and old_path != gd.document_path and os.path.exists(old_path):
-        try:
-            os.remove(old_path)
-        except OSError:
-            pass
-    gd.source = "UPLOADED"
-    gd.raw_extracted_data = extracted
-    # Populate the GD's columns from the extraction immediately, so the GD number and
-    # all parsed fields show on the Customs tab / GD detail even before the user runs
-    # the verify-save step. The later verify-save overwrites with confirmed values.
-    extracted_data = GDSave(**{k: v for k, v in extracted.items() if k in GDSave.model_fields})
-    svc.apply_gd_fields(gd, extracted_data)
-    svc.normalize_gd(gd, db)
-    svc.replace_items(gd, extracted_data.items, db)
-    db.commit()
-
-    # Cross-check the GD's LC# / BL# against the shipment's other documents so the user
-    # is warned BEFORE saving if this GD looks like it belongs to a different LC/shipment.
+    meter_document_accepted(file_path=stage_path)
     warnings = cross_check_gd_extracted(extracted, shipment_id, db)
     if warnings:
-        logger.warning(f"GD cross-check gd_id={gd.gd_id}: {warnings}")
+        logger.warning(f"GD cross-check shipment={shipment_id}: {warnings}")
 
-    # Surface the resolved gd_type (from declaration type / prefix) so the verify form
-    # can pre-select the GD-type dropdown.
-    extracted["gd_type"] = gd.gd_type
+    from modules.weboc.services import _resolve_gd_type_from_data
+    extracted["gd_type"] = _resolve_gd_type_from_data(extracted)
 
-    return {"gd_id": gd.gd_id, "document_filename": gd.document_filename,
-            "is_pdf": ext == ".pdf", "extracted": extracted, "warnings": warnings,
-            "extraction_failed": False}
+    return {
+        "staged_file": staged_name,
+        "original_filename": file.filename,
+        "existing_id": existing_id,
+        "is_pdf": ext == ".pdf",
+        "extracted": extracted,
+        "warnings": warnings,
+        "extraction_failed": False,
+    }
 
 
 @router.post("/", response_model=GDSaveResult)

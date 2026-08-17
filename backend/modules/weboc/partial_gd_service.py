@@ -187,6 +187,23 @@ def apply_partial_gd_item_details(entry: ExBondEntry, items: List[GDItemIn],
     return count
 
 
+def find_duplicate_gd_number_for_extract(
+    entry_id: int,
+    gd_number: Optional[str],
+    db: Session,
+) -> Optional[ExBondEntry]:
+    """Check duplicate EB GD number before validate, using extracted gd_number."""
+    if not gd_number or not str(gd_number).strip():
+        return None
+    entry = get_entry_or_error(entry_id, db)
+    norm = str(gd_number).strip().upper()
+    return (db.query(ExBondEntry)
+              .filter(ExBondEntry.into_bond_gd_id == entry.into_bond_gd_id,
+                      ExBondEntry.entry_id != entry.entry_id,
+                      func.upper(func.btrim(ExBondEntry.gd_number)) == norm)
+              .first())
+
+
 def find_duplicate_gd_number(entry: ExBondEntry, db: Session) -> Optional[ExBondEntry]:
     """Another Partial GD on the same Into-Bond GD already carrying this EB GD Number
     (case/whitespace-insensitive), if any. None when this entry has no gd_number yet."""
@@ -203,10 +220,57 @@ def find_duplicate_gd_number(entry: ExBondEntry, db: Session) -> Optional[ExBond
 # ---------------------------------------------------------------------------
 # Validate against the selected Quota Approval + finalize
 # ---------------------------------------------------------------------------
+def commit_staged_entry_attachment(
+    entry: ExBondEntry,
+    kind: str,
+    staged_file: str,
+    original_filename: str,
+    db: Session,
+    user_id: int,
+    *,
+    replace: bool = True,
+) -> GDAttachment:
+    from utils.staging import staged_dir
+    from modules.weboc.gd_service import ATTACH_STAGE_SUBDIR, ATTACH_DIR
+
+    stage_path = os.path.join(
+        staged_dir(ATTACH_STAGE_SUBDIR, ATTACH_DIR), os.path.basename(staged_file))
+    if not os.path.exists(stage_path):
+        raise ValidationError("Staged document not found — please re-upload the file.")
+    with open(stage_path, "rb") as f:
+        contents = f.read()
+    try:
+        os.remove(stage_path)
+    except OSError:
+        pass
+    orig = original_filename or "document.pdf"
+    if replace:
+        return replace_entry_attachment(entry, kind, orig, contents, db, user_id)
+    return add_entry_attachment(entry, kind, orig, contents, db, user_id)
+
+
 def validate_partial_gd_approval(entry_id: int, data: PartialGdValidateApproval,
                                   user_id: int, db: Session) -> ExBondEntry:
     entry = get_entry_or_error(entry_id, db)
     gd = get_gd_or_error(entry.into_bond_gd_id, db)
+
+    if data.staged_view_file:
+        commit_staged_entry_attachment(
+            entry, "EX_BOND_GD_VIEW", data.staged_view_file,
+            data.original_view_filename or "gd_view.pdf", db, user_id,
+        )
+    if data.view:
+        apply_partial_gd_view(entry, data.view)
+
+    for pending in data.pending_item_uploads or []:
+        att = commit_staged_entry_attachment(
+            entry, "EX_BOND_ITEM_DETAILS", pending.staged_file,
+            pending.original_filename or "item_details.pdf", db, user_id, replace=False,
+        )
+        apply_partial_gd_item_details(entry, pending.items or [], att.attachment_id, db)
+
+    if data.quantity_mt is not None:
+        entry.quantity_mt = data.quantity_mt
 
     items = (db.query(ExBondItem).filter(ExBondItem.entry_id == entry.entry_id)
                .order_by(ExBondItem.item_number).all())

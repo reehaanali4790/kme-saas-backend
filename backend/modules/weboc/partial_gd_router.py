@@ -26,7 +26,7 @@ from modules.weboc.extractors.gd_view_extractor_service import extract_gd_view
 from modules.weboc.extractors.item_details_extractor_service import extract_item_details
 from modules.weboc.gd_service import ALLOWED_EXTENSIONS
 from modules.weboc.helpers.weboc_service import bond_summary
-from . import services as svc
+from modules.weboc import services as weboc_svc
 from . import partial_gd_service as pgd
 from .schemas import PartialGdViewIn, PartialGdItemDetailsIn, PartialGdValidateApproval
 
@@ -66,46 +66,49 @@ async def partial_gd_view_upload_and_extract(
     current_user: User = Depends(require_min_role("ADMIN", "MANAGER", "OPERATOR")),
 ):
     ext, filename = _check_ext(file)
-    entry = pgd.get_entry_or_error(entry_id, db)
+    pgd.get_entry_or_error(entry_id, db)
     file_contents = await file.read()
-    att = pgd.replace_entry_attachment(entry, "EX_BOND_GD_VIEW", filename, file_contents, db, current_user.user_id)
-    db.commit()
-    meter_document_accepted(file_path=att.file_path)
+    staged_name, stage_path = weboc_svc.stage_attachment_bytes(file_contents, filename)
 
     extracted, extraction_error = safe_extract(
-        extract_gd_view, att.file_path, settings.ANTHROPIC_API_KEY,
-        doc_label=f"Partial GD EB GD View, entry_id={entry.entry_id}, file={filename}")
+        extract_gd_view, stage_path, settings.ANTHROPIC_API_KEY,
+        doc_label=f"Partial GD EB GD View, entry_id={entry_id}, file={filename}")
 
     if extraction_error:
-        logger.warning(f"Partial GD {entry.entry_id}: EB GD View extraction failed — manual entry.")
-        return {"entry_id": entry.entry_id, "attachment_id": att.attachment_id,
-                "document_filename": att.filename, "is_pdf": ext == ".pdf",
-                "extracted": {}, "warnings": [], "extraction_failed": True,
-                "extraction_message": extraction_error}
+        logger.warning(f"Partial GD {entry_id}: EB GD View extraction failed — manual entry.")
+        return {
+            "entry_id": entry_id,
+            "staged_file": staged_name,
+            "original_filename": filename,
+            "is_pdf": ext == ".pdf",
+            "extracted": {},
+            "warnings": [],
+            "extraction_failed": True,
+            "extraction_message": extraction_error,
+        }
 
-    view_data = PartialGdViewIn(**extracted)
-    pgd.apply_partial_gd_view(entry, view_data)
-    db.commit()
-    db.refresh(entry)
-
+    meter_document_accepted(file_path=stage_path)
     warnings = []
-    if svc.classify_declaration(extracted.get("declaration_type")) != "EX_BOND" and \
-            svc.classify_from_gd_number(extracted.get("gd_number")) != "EX_BOND":
+    if weboc_svc.classify_declaration(extracted.get("declaration_type")) != "EX_BOND" and \
+            weboc_svc.classify_from_gd_number(extracted.get("gd_number")) != "EX_BOND":
         warnings.append("This document does not look like an Ex-Bond (EB/XB) GD View — please verify.")
 
-    # Early, non-blocking heads-up — the hard, unbypassable block happens at
-    # validate-approval time (the actual "recording" of the release).
-    dup = pgd.find_duplicate_gd_number(entry, db)
+    dup = pgd.find_duplicate_gd_number_for_extract(entry_id, extracted.get("gd_number"), db)
     if dup:
         warnings.append(
-            f"EB GD Number '{entry.gd_number}' is already recorded on this Into-Bond GD "
+            f"EB GD Number '{extracted.get('gd_number')}' is already recorded on this Into-Bond GD "
             f"as Partial GD #{dup.entry_id} ({'finalized' if dup.is_finalized else 'draft'}). "
             f"Validating this one will be blocked as a duplicate."
         )
 
-    return {"entry_id": entry.entry_id, "attachment_id": att.attachment_id,
-            "document_filename": att.filename, "is_pdf": ext == ".pdf",
-            "extracted": extracted, "warnings": warnings}
+    return {
+        "entry_id": entry_id,
+        "staged_file": staged_name,
+        "original_filename": filename,
+        "is_pdf": ext == ".pdf",
+        "extracted": extracted,
+        "warnings": warnings,
+    }
 
 
 @partial_gd_router.post("/{entry_id}/item-details/upload-and-extract")
@@ -116,37 +119,41 @@ async def partial_gd_item_details_upload_and_extract(
     current_user: User = Depends(require_min_role("ADMIN", "MANAGER", "OPERATOR")),
 ):
     ext, filename = _check_ext(file)
-    entry = pgd.get_entry_or_error(entry_id, db)
+    pgd.get_entry_or_error(entry_id, db)
     file_contents = await file.read()
-    # Append — a Partial GD expects several Item Details documents, unlike the IB's own
-    # (single, replace-semantics) Item Details.
-    att = pgd.add_entry_attachment(entry, "EX_BOND_ITEM_DETAILS", filename, file_contents, db, current_user.user_id)
-    db.commit()
-    meter_document_accepted(file_path=att.file_path)
+    staged_name, stage_path = weboc_svc.stage_attachment_bytes(file_contents, filename)
 
     extracted, extraction_error = safe_extract(
-        extract_item_details, att.file_path, settings.ANTHROPIC_API_KEY,
-        doc_label=f"Partial GD Item Details, entry_id={entry.entry_id}, file={filename}")
+        extract_item_details, stage_path, settings.ANTHROPIC_API_KEY,
+        doc_label=f"Partial GD Item Details, entry_id={entry_id}, file={filename}")
 
     if extraction_error:
-        logger.warning(f"Partial GD {entry.entry_id}: Item Details extraction failed — manual entry.")
-        return {"entry_id": entry.entry_id, "attachment_id": att.attachment_id,
-                "document_filename": att.filename, "is_pdf": ext == ".pdf",
-                "extracted": {"items": []}, "warnings": [], "extraction_failed": True,
-                "extraction_message": extraction_error}
+        logger.warning(f"Partial GD {entry_id}: Item Details extraction failed — manual entry.")
+        return {
+            "entry_id": entry_id,
+            "staged_file": staged_name,
+            "original_filename": filename,
+            "is_pdf": ext == ".pdf",
+            "extracted": {"items": []},
+            "warnings": [],
+            "extraction_failed": True,
+            "extraction_message": extraction_error,
+        }
 
-    parsed = PartialGdItemDetailsIn(**extracted)
-    added = pgd.apply_partial_gd_item_details(entry, parsed.items or [], att.attachment_id, db)
-    db.commit()
-
+    meter_document_accepted(file_path=stage_path)
     warnings = []
     items = extracted.get("items") or []
     if items and not any(it.get("sro_no") or it.get("quota_reference") for it in items):
         warnings.append("No SRO / quota reference was found on any item in this document.")
 
-    return {"entry_id": entry.entry_id, "attachment_id": att.attachment_id,
-            "document_filename": att.filename, "is_pdf": ext == ".pdf",
-            "extracted": extracted, "items_added": added, "warnings": warnings}
+    return {
+        "entry_id": entry_id,
+        "staged_file": staged_name,
+        "original_filename": filename,
+        "is_pdf": ext == ".pdf",
+        "extracted": extracted,
+        "warnings": warnings,
+    }
 
 
 @partial_gd_router.get("/{entry_id}")
@@ -166,7 +173,7 @@ def validate_partial_gd_approval(
     current_user: User = Depends(require_min_role("ADMIN", "MANAGER", "OPERATOR")),
 ):
     entry = pgd.validate_partial_gd_approval(entry_id, data, current_user.user_id, db)
-    gd = svc.get_gd_or_error(entry.into_bond_gd_id, db)
+    gd = weboc_svc.get_gd_or_error(entry.into_bond_gd_id, db)
     logger.info(f"Partial GD validated: entry_id={entry.entry_id}, approval_id={entry.approval_id}, "
                 f"qty={entry.quantity_mt}")
     return {"success": True, "entry_id": entry.entry_id, "is_finalized": True,
@@ -181,7 +188,7 @@ def delete_partial_gd_item_details(
     current_user: User = Depends(require_min_role("ADMIN", "MANAGER", "OPERATOR")),
 ):
     entry = pgd.delete_partial_gd_item_details_doc(entry_id, attachment_id, db, deleted_by=current_user.user_id)
-    gd = svc.get_gd_or_error(entry.into_bond_gd_id, db)
+    gd = weboc_svc.get_gd_or_error(entry.into_bond_gd_id, db)
     logger.info(f"Partial GD Item Details document removed: entry_id={entry_id}, attachment_id={attachment_id}, "
                 f"is_finalized={entry.is_finalized}")
     return {"success": True, "entry_id": entry_id, "attachment_id": attachment_id,

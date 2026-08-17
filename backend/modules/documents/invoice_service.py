@@ -15,9 +15,11 @@ from models.database_models import CommercialInvoice, InvoiceLineItem, Shipment,
 from modules.documents.invoice_schemas import InvoiceSave, STR_FIELDS, DEC_FIELDS
 from infrastructure.normalization.normalization_service import normalize_invoice_parties
 from utils.uploads import safe_upload_path
+from utils.staging import promote_staged, replace_document_path
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
 UPLOAD_DIR = os.path.join(settings.UPLOAD_DIR, "invoice_documents")
+STAGE_SUBDIR = "invoice_documents"
 
 
 def save_file(upload: UploadFile, invoice_id: int) -> str:
@@ -173,23 +175,53 @@ def get_invoice_or_404(db: Session, invoice_id: int, with_items: bool = False) -
     return inv
 
 
-def save_invoice(db: Session, data: InvoiceSave, user_id: int) -> CommercialInvoice:
+def apply_staged_document(inv: CommercialInvoice, data: InvoiceSave):
+    if not data.staged_file:
+        return
+    dest, orig = promote_staged(
+        STAGE_SUBDIR, data.staged_file, inv.invoice_id,
+        data.original_filename, ALLOWED_EXTENSIONS,
+    )
+    if dest:
+        replace_document_path(inv, dest, orig)
+    if data.raw_extracted_data is not None:
+        inv.raw_extracted_data = data.raw_extracted_data
+
+
+def _resolve_invoice(db: Session, data: InvoiceSave, user_id: int) -> CommercialInvoice:
     if data.invoice_id:
         inv = db.query(CommercialInvoice).filter(
             CommercialInvoice.invoice_id == data.invoice_id).first()
         if not inv:
-            raise NotFoundError("Invoice placeholder not found")
-    else:
-        shipment = (db.query(Shipment).filter(Shipment.shipment_id == data.shipment_id).first()
-                    if data.shipment_id else None)
-        inv = CommercialInvoice(shipment_id=data.shipment_id,
-                                lc_id=shipment.lc_id if shipment else None,
-                                source="MANUAL", created_by=user_id)
-        db.add(inv)
-        db.flush()
+            raise NotFoundError("Invoice not found")
+        return inv
+
+    if data.shipment_id:
+        inv = (db.query(CommercialInvoice)
+               .filter(CommercialInvoice.shipment_id == data.shipment_id)
+               .order_by(CommercialInvoice.invoice_id.desc()).first())
+        if inv:
+            return inv
+
+    shipment = db.query(Shipment).filter(Shipment.shipment_id == data.shipment_id).first() \
+        if data.shipment_id else None
+    inv = CommercialInvoice(
+        shipment_id=data.shipment_id,
+        lc_id=shipment.lc_id if shipment else None,
+        source="UPLOADED" if data.staged_file else "MANUAL",
+        created_by=user_id,
+    )
+    db.add(inv)
+    db.flush()
+    return inv
+
+
+def save_invoice(db: Session, data: InvoiceSave, user_id: int) -> CommercialInvoice:
+    inv = _resolve_invoice(db, data, user_id)
 
     apply_invoice_fields(inv, data, user_id)
     normalize_invoice_parties(inv, db)
+    apply_staged_document(inv, data)
     inv.status = "VERIFIED"
     db.flush()
     replace_line_items(inv, data.line_items, db)

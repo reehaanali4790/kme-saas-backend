@@ -4,7 +4,6 @@ An insurance certificate/policy attaches to a shipment. PDF only. After extracti
 BL/LC numbers are cross-checked against the shipment's BL and LC (non-blocking warning).
 """
 
-import os
 import logging
 from pathlib import Path
 
@@ -23,14 +22,14 @@ from modules.documents.extractors.insurance_extractor import extract_insurance
 from infrastructure.activity.activity_service import log_activity
 from modules.documents import insurance_service as svc
 from modules.documents.insurance_schemas import InsuranceSave
+from utils.staging import stage_upload
 
 logger = logging.getLogger("uvicorn")
 
 router = APIRouter(prefix="/api/insurance", tags=["Insurance"])
 
-# Match the shared shipment upload component (JPG/PNG/PDF) so behaviour/validation
-# messages are identical to the other document types.
 ALLOWED_EXTENSIONS = svc.ALLOWED_EXTENSIONS
+STAGE_SUBDIR = svc.STAGE_SUBDIR
 
 _can_write = require_min_role("ADMIN", "MANAGER", "OPERATOR")
 
@@ -56,60 +55,39 @@ def upload_and_extract(
     if not shipment:
         raise HTTPException(status_code=404, detail="Shipment not found")
 
-    # One insurance certificate per shipment — reuse the existing row instead of
-    # accumulating duplicates when the document is (re-)uploaded.
-    ins = (db.query(InsuranceCertificate)
-             .filter(InsuranceCertificate.shipment_id == shipment_id)
-             .order_by(InsuranceCertificate.insurance_id.desc()).first())
-    replacing = ins is not None
-    if ins is None:
-        ins = InsuranceCertificate(shipment_id=shipment_id, lc_id=shipment.lc_id,
-                                   source="UPLOADED", status="PENDING_REVIEW",
-                                   created_by=current_user.user_id)
-        db.add(ins)
-        db.flush()
+    existing = (db.query(InsuranceCertificate)
+                  .filter(InsuranceCertificate.shipment_id == shipment_id)
+                  .order_by(InsuranceCertificate.insurance_id.desc()).first())
+    existing_dict = svc.to_dict(existing, shipment) if existing else {}
+    existing_id = existing.insurance_id if existing else None
 
-    # Keep the old document + the already-verified column values until the new document
-    # has actually been extracted.
-    old_path = ins.document_path
-    ins.document_path = svc.save_file(file, ins.insurance_id)
-    ins.document_filename = file.filename
-    db.commit()
-    meter_document_accepted(file_path=ins.document_path)
+    try:
+        staged_name, stage_path, _ = stage_upload(file, STAGE_SUBDIR, ALLOWED_EXTENSIONS)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     extracted, extraction_error = safe_extract(
-        extract_insurance, ins.document_path, settings.ANTHROPIC_API_KEY,
-        doc_label=f"Insurance, insurance_id={ins.insurance_id}, file={file.filename}")
+        extract_insurance, stage_path, settings.ANTHROPIC_API_KEY,
+        doc_label=f"Insurance, shipment_id={shipment_id}, file={file.filename}")
 
     if extraction_error:
-        log_activity(db, shipment_id, current_user.user_id,
-                     "REPLACE" if replacing else "UPLOAD", doc_type="Insurance")
-        db.commit()
-        logger.warning(f"Insurance {ins.insurance_id}: extraction failed, falling back to "
-                       f"manual entry (previous data preserved, replace={replacing}).")
-        return {"insurance_id": ins.insurance_id, "document_filename": ins.document_filename,
-                "extracted": svc.to_dict(ins) if replacing else {},
-                "verification": svc.verify(None, None, shipment), "warnings": [],
-                "extraction_failed": True, "extraction_message": extraction_error,
-                "had_previous_data": replacing}
+        logger.warning(
+            "Insurance shipment=%s: extraction failed, staged for manual entry (existing=%s).",
+            shipment_id, existing_id,
+        )
+        return {
+            "staged_file": staged_name,
+            "original_filename": file.filename,
+            "existing_id": existing_id,
+            "extracted": existing_dict,
+            "verification": svc.verify(None, None, shipment),
+            "warnings": [],
+            "extraction_failed": True,
+            "extraction_message": extraction_error,
+            "had_previous_data": existing is not None,
+        }
 
-    if old_path and old_path != ins.document_path and os.path.exists(old_path):
-        try:
-            os.remove(old_path)
-        except OSError:
-            pass
-    ins.status = "PENDING_REVIEW"
-    ins.source = "UPLOADED"
-    ins.updated_by = current_user.user_id
-    ins.raw_extracted_data = extracted
-    # Pre-fill the record's columns from the extraction so the tab shows data immediately
-    # even before the user explicitly saves (they can still edit/verify afterwards).
-    svc.apply_insurance_fields(ins, InsuranceSave(**extracted), current_user.user_id)
-    log_activity(db, shipment_id, current_user.user_id,
-                 "REPLACE" if replacing else "UPLOAD", doc_type="Insurance")
-    db.commit()
-    db.refresh(ins)
-
+    meter_document_accepted(file_path=stage_path)
     verification = svc.verify(extracted.get("bl_number"), extracted.get("lc_number"), shipment)
     warnings = []
     if verification["bl"] == "NOT_MATCHED":
@@ -119,9 +97,15 @@ def upload_and_extract(
         warnings.append(f"Extracted LC number does not match the shipment LC "
                         f"({verification['shipment_lc_number'] or 'none on file'}).")
 
-    return {"insurance_id": ins.insurance_id, "document_filename": ins.document_filename,
-            "extracted": extracted, "verification": verification, "warnings": warnings,
-            "extraction_failed": False}
+    return {
+        "staged_file": staged_name,
+        "original_filename": file.filename,
+        "existing_id": existing_id,
+        "extracted": extracted,
+        "verification": verification,
+        "warnings": warnings,
+        "extraction_failed": False,
+    }
 
 
 from modules.lc_creation.helpers.shipment_validator import validate_shipment
@@ -130,7 +114,7 @@ from modules.lc_creation.helpers.shipment_validator import validate_shipment
 def save_insurance(data: InsuranceSave, db: Session = Depends(get_tenant_db),
                    current_user: User = Depends(_can_write)):
     ins = svc.save_insurance(db, data, current_user.user_id)
-    log_activity(db, ins.shipment_id, current_user.user_id, "EDIT", doc_type="Insurance")
+    log_activity(db, ins.shipment_id, current_user.user_id, "UPLOAD", doc_type="Insurance")
     validate_shipment(ins.shipment_id, db)
     db.commit()
     db.refresh(ins)

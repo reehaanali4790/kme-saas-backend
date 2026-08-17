@@ -31,7 +31,10 @@ class GDChargeIn(BaseModel):
 
 
 class GDViewSave(BaseModel):
-    gd_id: int
+    gd_id: Optional[int] = None
+    shipment_id: Optional[int] = None
+    staged_file: Optional[str] = None
+    original_filename: Optional[str] = None
     declaration_type: Optional[str] = None
     gd_type: Optional[str] = None
     gd_number: Optional[str] = None
@@ -166,7 +169,10 @@ class GDItemIn(BaseModel):
 
 
 class ItemDetailsSave(BaseModel):
-    gd_id: int
+    gd_id: Optional[int] = None
+    shipment_id: Optional[int] = None
+    staged_file: Optional[str] = None
+    original_filename: Optional[str] = None
     gd_number: Optional[str] = None
     importer_name: Optional[str] = None
     importer_ntn: Optional[str] = None
@@ -188,7 +194,10 @@ class ItemDetailsSave(BaseModel):
 
 
 class IntoBondGDSave(BaseModel):
-    gd_id: int
+    gd_id: Optional[int] = None
+    shipment_id: Optional[int] = None
+    staged_file: Optional[str] = None
+    original_filename: Optional[str] = None
     gd_number: Optional[str] = None
     machine_number: Optional[str] = None
     custom_office: Optional[str] = None
@@ -248,7 +257,10 @@ class IntoBondGDSave(BaseModel):
 
 
 class ExBondGDSave(BaseModel):
-    gd_id: int
+    gd_id: Optional[int] = None
+    shipment_id: Optional[int] = None
+    staged_file: Optional[str] = None
+    original_filename: Optional[str] = None
     gd_number: Optional[str] = None
     quantity_mt: Optional[Decimal] = None
     attachment_id: Optional[int] = None
@@ -445,10 +457,20 @@ class PartialGdItemDetailsIn(BaseModel):
     items: Optional[List[GDItemIn]] = None
 
 
+class PartialGdPendingItemUpload(BaseModel):
+    staged_file: str
+    original_filename: Optional[str] = None
+    items: Optional[List[GDItemIn]] = None
+
+
 class PartialGdValidateApproval(BaseModel):
     approval_id: int
     quantity_mt: Optional[Decimal] = None
     force: bool = False
+    staged_view_file: Optional[str] = None
+    original_view_filename: Optional[str] = None
+    view: Optional[PartialGdViewIn] = None
+    pending_item_uploads: Optional[List["PartialGdPendingItemUpload"]] = None
 
     @field_validator("quantity_mt", mode="before")
     @classmethod

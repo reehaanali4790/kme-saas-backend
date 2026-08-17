@@ -18,9 +18,11 @@ from core.exceptions import NotFoundError
 from models.database_models import InsuranceCertificate, Shipment
 from modules.documents.insurance_schemas import InsuranceSave, STR_FIELDS, DATE_FIELDS, DEC_FIELDS
 from utils.uploads import safe_upload_path
+from utils.staging import promote_staged, replace_document_path
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
 UPLOAD_DIR = os.path.join(settings.UPLOAD_DIR, "insurance_documents")
+STAGE_SUBDIR = "insurance_documents"
 
 
 def save_file(upload: UploadFile, insurance_id: int) -> str:
@@ -130,20 +132,49 @@ def get_insurance_or_404(db: Session, insurance_id: int) -> InsuranceCertificate
     return ins
 
 
-def save_insurance(db: Session, data: InsuranceSave, user_id: int) -> InsuranceCertificate:
+def apply_staged_document(ins: InsuranceCertificate, data: InsuranceSave):
+    if not data.staged_file:
+        return
+    dest, orig = promote_staged(
+        STAGE_SUBDIR, data.staged_file, ins.insurance_id,
+        data.original_filename, ALLOWED_EXTENSIONS,
+    )
+    if dest:
+        replace_document_path(ins, dest, orig)
+    if data.raw_extracted_data is not None:
+        ins.raw_extracted_data = data.raw_extracted_data
+
+
+def _resolve_insurance(db: Session, data: InsuranceSave, user_id: int) -> InsuranceCertificate:
     if data.insurance_id:
-        ins = get_insurance_or_404(db, data.insurance_id)
-    else:
-        shipment = (db.query(Shipment).filter(Shipment.shipment_id == data.shipment_id).first()
-                    if data.shipment_id else None)
-        ins = InsuranceCertificate(shipment_id=data.shipment_id,
-                                   lc_id=shipment.lc_id if shipment else None,
-                                   source="MANUAL", status="PENDING_REVIEW",
-                                   created_by=user_id)
-        db.add(ins)
-        db.flush()
+        return get_insurance_or_404(db, data.insurance_id)
+
+    if data.shipment_id:
+        ins = (db.query(InsuranceCertificate)
+               .filter(InsuranceCertificate.shipment_id == data.shipment_id)
+               .order_by(InsuranceCertificate.insurance_id.desc()).first())
+        if ins:
+            return ins
+
+    shipment = db.query(Shipment).filter(Shipment.shipment_id == data.shipment_id).first() \
+        if data.shipment_id else None
+    ins = InsuranceCertificate(
+        shipment_id=data.shipment_id,
+        lc_id=shipment.lc_id if shipment else None,
+        source="UPLOADED" if data.staged_file else "MANUAL",
+        status="PENDING_REVIEW",
+        created_by=user_id,
+    )
+    db.add(ins)
+    db.flush()
+    return ins
+
+
+def save_insurance(db: Session, data: InsuranceSave, user_id: int) -> InsuranceCertificate:
+    ins = _resolve_insurance(db, data, user_id)
 
     apply_insurance_fields(ins, data, user_id)
+    apply_staged_document(ins, data)
     if not ins.status or ins.status == "PENDING_REVIEW":
         ins.status = "VERIFIED"
     return ins

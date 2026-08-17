@@ -15,6 +15,10 @@ from modules.shipments.demurrage_service import compute_demurrage
 from modules.shipments.container_detention_service import compute_container_detention, resolve_bl_type
 from modules.shipments.eta_calc import estimate_eta
 from infrastructure.normalization.normalization_service import normalize_bl_parties
+from utils.staging import promote_staged, replace_document_path
+
+BL_STAGE_SUBDIR = "bl_documents"
+BL_ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
 
 
 def get_demurrage_config(db: Session) -> Optional[DemurrageConfig]:
@@ -190,18 +194,36 @@ def apply_bl_fields(bl: BillOfLading, data: BLSave, user_id: int) -> None:
     bl.updated_at = datetime.utcnow()
 
 
-def create_bl(data: BLSave, db: Session, user_id: int) -> BillOfLading:
+def apply_staged_document(bl: BillOfLading, data: BLSave, upload_dir: Optional[str] = None):
+    if not data.staged_file:
+        return
+    dest, orig = promote_staged(
+        BL_STAGE_SUBDIR, data.staged_file, bl.bl_id,
+        data.original_filename, BL_ALLOWED_EXTENSIONS,
+        perm_dir=upload_dir,
+    )
+    if dest:
+        replace_document_path(bl, dest, orig)
+    if data.raw_extracted_data is not None:
+        bl.raw_extracted_data = data.raw_extracted_data
+
+
+def create_bl(data: BLSave, db: Session, user_id: int,
+              upload_dir: Optional[str] = None) -> BillOfLading:
     check_duplicate_bl_number(db, data.bl_number, data.bl_id)
 
     if data.bl_id:
-        # Placeholder row was already created during upload-and-extract
         bl = get_bl_or_404(data.bl_id, db)
     else:
-        bl = BillOfLading(source="MANUAL", created_by=user_id)
+        bl = BillOfLading(
+            source="UPLOADED" if data.staged_file else "MANUAL",
+            created_by=user_id,
+        )
         db.add(bl)
         db.flush()
 
     apply_bl_fields(bl, data, user_id)
+    apply_staged_document(bl, data, upload_dir=upload_dir)
     normalize_bl_parties(bl, db)
     if not bl.bl_type:
         bl.bl_type = resolve_bl_type(bl.raw_extracted_data, bl, db)

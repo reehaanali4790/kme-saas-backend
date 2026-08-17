@@ -20,7 +20,7 @@ rejected that wasn't before.
 """
 from datetime import date
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, field_validator
 
@@ -42,6 +42,9 @@ class FISave(BaseModel):
     shipment_id: Optional[int] = None
     lc_id: Optional[int] = None
     status: Optional[str] = None
+    staged_file: Optional[str] = None
+    original_filename: Optional[str] = None
+    raw_extracted_data: Optional[Dict[str, Any]] = None
 
     fi_number: Optional[str] = None
     fi_status: Optional[str] = None

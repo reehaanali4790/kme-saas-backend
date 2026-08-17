@@ -3,7 +3,6 @@ Packing List API — upload, AI extract, verify/save (with line items), CRUD.
 Packing lists attach to a shipment.
 """
 
-import os
 import logging
 from pathlib import Path
 
@@ -14,7 +13,7 @@ from sqlalchemy.orm import Session
 from core.tenant import get_tenant_db
 from config.settings import settings
 from core.permissions import require_min_role
-from models.database_models import PackingList, PackingLineItem, Shipment, User
+from models.database_models import PackingList, Shipment, User
 from modules.auth.dependencies import get_current_user
 from infrastructure.activity.activity_service import log_activity
 from infrastructure.document_ai.document_ai import safe_extract
@@ -24,12 +23,14 @@ from modules.documents import packing_service as svc
 from modules.documents.packing_schemas import PackingSave
 from modules.workflow.helpers import check_gate
 from modules.workflow.constants import ACTION_UPLOAD_PACKING
+from utils.staging import stage_upload
 
 logger = logging.getLogger("uvicorn")
 
 router = APIRouter(prefix="/api/packing", tags=["Packing Lists"])
 
 ALLOWED_EXTENSIONS = svc.ALLOWED_EXTENSIONS
+STAGE_SUBDIR = svc.STAGE_SUBDIR
 
 _can_write = require_min_role("ADMIN", "MANAGER", "OPERATOR")
 
@@ -59,60 +60,51 @@ def upload_and_extract(
     if not shipment:
         raise HTTPException(status_code=404, detail="Shipment not found")
 
-    # One packing list per shipment — reuse the existing record instead of piling up
-    # duplicate / abandoned-placeholder rows when a document is (re-)uploaded.
-    p = (db.query(PackingList)
-           .filter(PackingList.shipment_id == shipment_id)
-           .order_by(PackingList.packing_id.desc()).first())
-    is_replace = p is not None
-    if p is None:
-        p = PackingList(shipment_id=shipment_id, source="UPLOADED",
-                        status="PENDING_REVIEW", created_by=current_user.user_id)
-        db.add(p)
-        db.flush()
+    existing = (db.query(PackingList)
+                  .filter(PackingList.shipment_id == shipment_id)
+                  .order_by(PackingList.packing_id.desc()).first())
+    existing_dict = svc.to_dict(existing) if existing else {}
+    existing_id = existing.packing_id if existing else None
 
-    # Save the new document first; keep the old line items + old file until the extraction
-    # has actually succeeded, so a failed extraction can't destroy the last good data.
-    old_path = p.document_path
-    p.document_path = svc.save_file(file, p.packing_id)
-    p.document_filename = file.filename
-    db.commit()
-    meter_document_accepted(file_path=p.document_path)
+    try:
+        staged_name, stage_path, _ = stage_upload(file, STAGE_SUBDIR, ALLOWED_EXTENSIONS)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     extracted, extraction_error = safe_extract(
-        extract_packing, p.document_path, settings.ANTHROPIC_API_KEY,
-        doc_label=f"Packing List, packing_id={p.packing_id}, file={file.filename}")
+        extract_packing, stage_path, settings.ANTHROPIC_API_KEY,
+        doc_label=f"Packing List, shipment_id={shipment_id}, file={file.filename}")
 
     if extraction_error:
-        db.commit()
-        logger.warning(f"Packing {p.packing_id}: extraction failed, falling back to manual "
-                       f"entry (previous data preserved, replace={is_replace}).")
-        return {"packing_id": p.packing_id, "document_filename": p.document_filename,
-                "is_pdf": ext == ".pdf",
-                "extracted": svc.to_dict(p) if is_replace else {},
-                "extraction_failed": True, "extraction_message": extraction_error,
-                "had_previous_data": is_replace}
+        logger.warning(
+            "Packing shipment=%s: extraction failed, staged for manual entry (existing=%s).",
+            shipment_id, existing_id,
+        )
+        return {
+            "staged_file": staged_name,
+            "original_filename": file.filename,
+            "existing_id": existing_id,
+            "is_pdf": ext == ".pdf",
+            "extracted": existing_dict,
+            "extraction_failed": True,
+            "extraction_message": extraction_error,
+            "had_previous_data": existing is not None,
+        }
 
-    # Extraction worked — now the new upload can replace the prior extraction.
-    db.query(PackingLineItem).filter(PackingLineItem.packing_id == p.packing_id).delete()
-    if old_path and old_path != p.document_path and os.path.exists(old_path):
-        try:
-            os.remove(old_path)
-        except OSError:
-            pass
-    p.status = "PENDING_REVIEW"
-    p.source = "UPLOADED"
-    p.updated_by = current_user.user_id
-    p.raw_extracted_data = extracted
-    db.commit()
-
+    meter_document_accepted(file_path=stage_path)
     partial = bool(extracted.get("_extraction_partial"))
-    return {"packing_id": p.packing_id, "document_filename": p.document_filename,
-            "is_pdf": ext == ".pdf", "extracted": extracted,
-            "extraction_failed": False, "extraction_partial": partial,
-            "extraction_message": (
-                "This document was long, so some line items may be missing. "
-                "Please check the rows below before saving." if partial else None)}
+    return {
+        "staged_file": staged_name,
+        "original_filename": file.filename,
+        "existing_id": existing_id,
+        "is_pdf": ext == ".pdf",
+        "extracted": extracted,
+        "extraction_failed": False,
+        "extraction_partial": partial,
+        "extraction_message": (
+            "This document was long, so some line items may be missing. "
+            "Please check the rows below before saving." if partial else None),
+    }
 
 
 from modules.lc_creation.helpers.shipment_validator import validate_shipment

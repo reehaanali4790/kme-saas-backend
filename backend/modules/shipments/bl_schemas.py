@@ -18,7 +18,7 @@ notes for this module.
 """
 from datetime import date
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, field_validator
 
@@ -49,6 +49,9 @@ class BLSave(BaseModel):
     bl_id: Optional[int] = None
     lc_id: Optional[int] = None
     shipment_id: Optional[int] = None
+    staged_file: Optional[str] = None
+    original_filename: Optional[str] = None
+    raw_extracted_data: Optional[Dict[str, Any]] = None
 
     bl_number: Optional[str] = None
     bl_issue_place: Optional[str] = None

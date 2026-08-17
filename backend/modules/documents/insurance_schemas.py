@@ -11,7 +11,7 @@ is an exact behavioral match here - no simplification needed, unlike fi_schemas.
 """
 from datetime import date
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, field_validator
 
@@ -29,6 +29,9 @@ class InsuranceSave(BaseModel):
     shipment_id: Optional[int] = None
     lc_id: Optional[int] = None
     status: Optional[str] = None
+    staged_file: Optional[str] = None
+    original_filename: Optional[str] = None
+    raw_extracted_data: Optional[Dict[str, Any]] = None
 
     bl_number: Optional[str] = None
     lc_number: Optional[str] = None
