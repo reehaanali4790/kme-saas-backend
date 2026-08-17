@@ -1,6 +1,9 @@
 """
 Migration: Exception paths & documentation intelligence.
 
+SUPERSEDED by Alembic revision ``002_exception_paths`` (run via ``deploy_migrate.py`` or
+``alembic upgrade head``). Kept for manual one-off recovery only.
+
 Adds:
   - shipments.contract_id, import_mode, lc_waiver_reason, docs_reception_status
   - file_pending, field_sources on core document tables

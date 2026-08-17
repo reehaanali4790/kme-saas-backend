@@ -6,8 +6,12 @@ ADDITIVE and idempotent (CREATE TABLE for new tables, ADD COLUMN IF NOT EXISTS f
 columns), so this is safe to run on the live database on every deploy WITHOUT touching
 existing rows. If any step fails, this exits non-zero so the platform aborts the release.
 
+Legacy hand-written scripts in scripts/migrations/ still run for existing single-schema
+upgrades. New schema changes should be Alembic revisions under alembic/versions/.
+
 Run locally:  python backend/deploy_migrate.py
 Release cmd:  cd backend && python deploy_migrate.py
+Alembic only: cd backend && PYTHONPATH=. alembic upgrade head
 """
 
 import os
@@ -81,8 +85,8 @@ MIGRATIONS = [
     "migrate_ai_usage_events.py",      # platform.ai_usage_events for SaaS Admin Suite AI metering
 ]
 
-# Tenant-schema patches — always run (including SaaS deploys where legacy public migrations are skipped).
-TENANT_PATCH_MIGRATIONS = [
+# Superseded by Alembic revision 002_exception_paths — kept for manual one-off runs only.
+_LEGACY_TENANT_PATCH_MIGRATIONS = [
     "migrate_exception_paths.py",
 ]
 
@@ -133,16 +137,13 @@ def main():
             skip_legacy_public = True
             print("  Fresh SaaS tenant schema detected — skipping legacy public-schema migrations.")
 
-    for script in TENANT_PATCH_MIGRATIONS:
-        path = os.path.join(HERE, "scripts", "migrations", script)
-        if not os.path.exists(path):
-            print(f"  SKIP (not found): {script}")
-            continue
-        print(f"\n--- {script} (tenant patch) ---")
-        result = subprocess.run([sys.executable, path], cwd=HERE, env=env)
-        if result.returncode != 0:
-            print(f"\nMIGRATION FAILED: {script} (exit {result.returncode}). Aborting release.")
-            sys.exit(result.returncode)
+    from infrastructure.migrations.alembic_runner import (
+        maybe_stamp_existing_database,
+        upgrade_head,
+    )
+
+    maybe_stamp_existing_database()
+    upgrade_head(env=env)
 
     print("\n" + "=" * 60)
     print("All migrations applied successfully.")

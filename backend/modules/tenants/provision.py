@@ -155,6 +155,12 @@ def provision_tenant(
     create_tenant_tables(db, schema_name)
     seed_tenant_defaults(db, schema_name, app_name=name)
 
+    try:
+        from infrastructure.migrations.alembic_runner import stamp_head_for_new_tenant
+        stamp_head_for_new_tenant(schema_name)
+    except Exception as exc:
+        logger.warning("Alembic tenant stamp skipped: %s", exc)
+
     db.commit()
     db.refresh(org)
     logger.info("Provisioned tenant %s -> %s", slug, schema_name)
