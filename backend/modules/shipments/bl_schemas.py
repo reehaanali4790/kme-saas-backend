@@ -100,6 +100,7 @@ class BLSave(BaseModel):
     detention_start_date: Optional[date] = None
     detention_end_date: Optional[date] = None
     detention_paid_date: Optional[date] = None
+    confirm_overwrites: Optional[list[str]] = None
 
     @field_validator(
         "bl_number", "bl_issue_place", "shipper_name", "shipper_address", "consignee",

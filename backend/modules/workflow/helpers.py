@@ -61,7 +61,9 @@ def check_shipment_create(
     db: Session,
     request: Request,
     *,
-    lc_id: int,
+    contract_id: int,
+    import_mode: str = "LC_BACKED",
+    lc_id: Optional[int] = None,
     user_id: int,
     override_reason: Optional[str] = None,
 ) -> None:
@@ -69,6 +71,8 @@ def check_shipment_create(
 
     gate_svc.assert_shipment_create_allowed_for_user(
         db,
+        contract_id=contract_id,
+        import_mode=import_mode,
         lc_id=lc_id,
         user_id=user_id,
         role_name=role_from_request(request),

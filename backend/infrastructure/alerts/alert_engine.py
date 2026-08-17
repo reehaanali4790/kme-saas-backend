@@ -142,6 +142,18 @@ def scan(db: Session) -> dict:
                  entity_type="SHIPMENT", entity_id=s.shipment_id,
                  lc_id=s.lc_id, shipment_id=s.shipment_id)
 
+        if (s.docs_reception_status or "") == "AWAITING":
+            from modules.shipments.docs_reception import docs_reception_summary
+            rec = docs_reception_summary(s)
+            missing = rec.get("missing_required_docs") or []
+            _add(db, created, existing,
+                 key=f"LANDED_AWAITING_DOCS:{s.shipment_id}",
+                 atype="LANDED_AWAITING_DOCS", severity="HIGH",
+                 title=f"Vessel on port — documents awaiting on {s.shipment_ref or 'SH-'+str(s.shipment_id)}",
+                 message=f"Shipment is on port but still missing: {', '.join(missing) or 'core documents'}.",
+                 entity_type="SHIPMENT", entity_id=s.shipment_id,
+                 lc_id=s.lc_id, shipment_id=s.shipment_id)
+
         # vessel arriving very soon (within ARRIVAL_DOCS_LEAD_DAYS) and docs still
         # incomplete — this is the WhatsApp-critical variant of the check above:
         # always fires regardless of any_doc, since an imminent arrival with any

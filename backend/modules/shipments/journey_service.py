@@ -12,6 +12,14 @@ from models.database_models import (
 from modules.shipments import services as ship_svc
 from modules.shipments.demurrage_service import compute_demurrage
 from modules.shipments.bl_service import get_demurrage_config
+from modules.shipments.docs_reception import docs_reception_summary
+from modules.workflow.import_paths import (
+    fi_required,
+    import_mode_label,
+    is_lc_backed,
+    missing_required_docs,
+    normalize_import_mode,
+)
 from modules.weboc.gd_service import _has_attachment
 from modules.weboc.helpers.weboc_service import filing_deadline, bond_summary, GD_FILING_DAYS
 
@@ -58,7 +66,6 @@ def _doc_upload_href(shipment_id: int, lc_id: int, doc_type: str, **extra) -> st
             params += f"&{k}={v}"
     return f"/shipment-doc-upload?{params}"
 
-
 def _validation_blocking(s: Shipment) -> tuple[bool, Optional[str]]:
     fails = [v for v in (s.validations or []) if (v.status or "").upper() == "FAIL"]
     if fails:
@@ -81,6 +88,7 @@ def build_journey(shipment_id: int, db: Session) -> dict:
     ])
     lc_id = s.lc_id
     lc = s.lc
+    import_mode = normalize_import_mode(s.import_mode)
     today = date.today()
     steps: list[dict] = []
 
@@ -89,7 +97,15 @@ def build_journey(shipment_id: int, db: Session) -> dict:
     has_pkg = bool(s.packing_lists)
     has_ins = bool(s.insurance_certificates)
     has_fi = bool(s.financial_instruments)
-    docs_core_done = has_bl and has_inv and has_pkg
+    missing_core = missing_required_docs(
+        import_mode,
+        has_bl=has_bl,
+        has_invoice=has_inv,
+        has_packing=has_pkg,
+        has_fi=has_fi,
+    )
+    docs_core_done = not missing_core
+    rec_summary = docs_reception_summary(s)
 
     val_blocked, val_msg = _validation_blocking(s)
     eta = s.eta
@@ -98,21 +114,43 @@ def build_journey(shipment_id: int, db: Session) -> dict:
     if eta:
         doc_expected = (eta - timedelta(days=3)).isoformat()
 
+    if is_lc_backed(import_mode):
+        steps.append(_step(
+            step_id="lc_linked",
+            label="LC Linked",
+            status="done" if lc_id else "blocked",
+            action_href=f"/lc-detail?id={lc_id}" if lc_id else None,
+        ))
+    else:
+        contract_ref = s.contract_id
+        steps.append(_step(
+            step_id="commercial_basis",
+            label=f"Commercial basis: Contract #{contract_ref}" if contract_ref else import_mode_label(import_mode),
+            status="done",
+            branch="non_lc",
+        ))
+
     steps.append(_step(
-        step_id="lc_linked",
-        label="LC Linked",
-        status="done",
-        action_href=f"/lc-detail?id={lc_id}" if lc_id else None,
+        step_id="docs_reception",
+        label="Documents Reception",
+        status={
+            "COMPLETE": "done",
+            "PARTIAL": "due",
+            "AWAITING": "overdue" if rec_summary.get("on_port") else "due",
+            "NOT_STARTED": "blocked",
+        }.get(s.docs_reception_status or "NOT_STARTED", "due"),
+        blocker=(
+            f"Missing: {', '.join(missing_core)}" if missing_core else None
+        ),
+        action_label="Capture or upload documents" if missing_core else None,
+        action_href=_doc_upload_href(
+            shipment_id, lc_id or 0,
+            "bl" if not has_bl else ("invoice" if not has_inv else "packing"),
+        ) if missing_core else f"/shipment?id={shipment_id}&tab=documents",
     ))
 
-    core_status = "done" if docs_core_done else ("due" if has_bl or has_inv or has_pkg else "blocked")
-    missing = []
-    if not has_bl:
-        missing.append("BL")
-    if not has_inv:
-        missing.append("Invoice")
-    if not has_pkg:
-        missing.append("Packing List")
+    core_status = "done" if docs_core_done else ("due" if has_bl or has_inv or has_pkg or has_fi else "blocked")
+    missing = list(missing_core)
     steps.append(_step(
         step_id="docs_core",
         label="Core Documents (BL, Invoice, Packing)",
@@ -152,16 +190,17 @@ def build_journey(shipment_id: int, db: Session) -> dict:
 
     fi = ship_svc.ordered_docs(s.financial_instruments)[0] if s.financial_instruments else None
     fi_expiry = fi.expiry_date.isoformat() if fi and fi.expiry_date else None
-    fi_status = "done" if has_fi else "due"
-    steps.append(_step(
-        step_id="fyi_uploaded",
-        label="Financial Instrument (FYI)",
-        status=fi_status,
-        expected_by=fi_expiry,
-        blocker=None if has_fi else "FYI required before GD filing in most cases",
-        action_label="Upload FYI" if not has_fi else None,
-        action_href=_doc_upload_href(shipment_id, lc_id, "fi"),
-    ))
+    if fi_required(import_mode):
+        fi_status = "done" if has_fi else "due"
+        steps.append(_step(
+            step_id="fyi_uploaded",
+            label="Financial Instrument (FYI)",
+            status=fi_status,
+            expected_by=fi_expiry,
+            blocker=None if has_fi else "FYI required before GD filing in most cases",
+            action_label="Upload FYI" if not has_fi else None,
+            action_href=_doc_upload_href(shipment_id, lc_id or 0, "fi"),
+        ))
 
     gd = ship_svc.ordered_docs(s.goods_declarations)[0] if s.goods_declarations else None
     gd_view = gd and (_has_attachment(gd.gd_id, "GD_VIEW", db) or gd.gd_view_uploaded or gd.gd_number)
@@ -417,7 +456,12 @@ def completeness_pct_for_shipment(s: Shipment, db: Session) -> int:
 
 
 def _doc_status_for_shipment(s: Shipment, doc_type: str, present: bool, db: Session,
-                             gd: Optional[GoodsDeclaration] = None) -> str:
+                             gd: Optional[GoodsDeclaration] = None,
+                             record=None) -> str:
+    if record and getattr(record, "file_pending", False):
+        return "file_pending"
+    if record and getattr(record, "source", None) == "MANUAL" and not getattr(record, "document_path", None):
+        return "manual_stub"
     if not present:
         return "missing"
     ship_val = (s.validation_status or "").upper()
@@ -449,7 +493,16 @@ def build_doc_status(shipment_id: int, db: Session) -> dict:
     has_bl = bool(s.bill_of_ladings)
     has_inv = bool(s.commercial_invoices)
     has_pkg = bool(s.packing_lists)
-    docs_core_done = has_bl and has_inv and has_pkg
+    import_mode = normalize_import_mode(s.import_mode)
+    missing_core = missing_required_docs(
+        import_mode,
+        has_bl=has_bl,
+        has_invoice=has_inv,
+        has_packing=has_pkg,
+        has_fi=bool(s.financial_instruments),
+    )
+    docs_core_done = not missing_core
+    rec_summary = docs_reception_summary(s)
     eta_days = (eta - today).days if eta else None
     whatsapp_critical = eta_days is not None and eta_days <= 3 and not docs_core_done
 
@@ -467,33 +520,49 @@ def build_doc_status(shipment_id: int, db: Session) -> dict:
         if fd.get("deadline"):
             gd_filing_deadline = fd["deadline"][:10]
 
-    def doc_row(doc_type: str, label: str, present: bool, expected_by: Optional[str]) -> dict:
-        status = _doc_status_for_shipment(s, doc_type, present, db, gd)
+    bl_rec = ship_svc.ordered_docs(s.bill_of_ladings)[0] if s.bill_of_ladings else None
+    inv_rec = ship_svc.ordered_docs(s.commercial_invoices)[0] if s.commercial_invoices else None
+    pkg_rec = ship_svc.ordered_docs(s.packing_lists)[0] if s.packing_lists else None
+    fi_rec = ship_svc.ordered_docs(s.financial_instruments)[0] if s.financial_instruments else None
+
+    def doc_row(doc_type: str, label: str, present: bool, expected_by: Optional[str],
+                record=None, manual_href: bool = False) -> dict:
+        status = _doc_status_for_shipment(s, doc_type, present, db, gd, record)
         critical = whatsapp_critical and doc_type in ("bl", "invoice", "packing") and not present
+        href = _doc_upload_href(shipment_id, lc_id or 0, doc_type, manual="1") if manual_href else (
+            _doc_upload_href(shipment_id, lc_id or 0, doc_type) if doc_type != "gd" else
+            _doc_upload_href(shipment_id, lc_id or 0, "gd", final="1")
+        )
         return {
             "type": doc_type,
             "label": label,
             "status": status,
             "expected_by": expected_by,
             "whatsapp_critical": critical,
-            "upload_href": _doc_upload_href(shipment_id, lc_id, doc_type) if doc_type != "gd" else
-                           _doc_upload_href(shipment_id, lc_id, "gd", final="1"),
+            "upload_href": href,
+            "manual_entry_href": _doc_upload_href(shipment_id, lc_id or 0, doc_type, manual="1"),
         }
 
     docs = [
-        doc_row("bl", "Bill of Lading", has_bl, doc_expected_core),
-        doc_row("invoice", "Commercial Invoice", has_inv, doc_expected_core),
-        doc_row("packing", "Packing List", has_pkg, doc_expected_core),
+        doc_row("bl", "Bill of Lading", has_bl, doc_expected_core, bl_rec, manual_href=True),
+        doc_row("invoice", "Commercial Invoice", has_inv, doc_expected_core, inv_rec),
+        doc_row("packing", "Packing List", has_pkg, doc_expected_core, pkg_rec),
         doc_row("insurance", "Insurance", bool(s.insurance_certificates), doc_expected_core),
-        doc_row("fi", "Financial Instrument", bool(s.financial_instruments), fi_expiry),
+    ]
+    if fi_required(import_mode):
+        docs.append(doc_row("fi", "Financial Instrument", bool(s.financial_instruments), fi_expiry, fi_rec))
+    docs.extend([
         doc_row("gdview", "GD View", bool(gd_view), gd_filing_deadline),
         doc_row("itemdetails", "Item Details", bool(item_details), gd_filing_deadline),
         doc_row("gd", "Final GD", bool(final_gd), gd_filing_deadline),
-    ]
+    ])
 
     return {
         "shipment_id": shipment_id,
         "lc_id": lc_id,
+        "import_mode": import_mode,
+        "docs_reception_status": s.docs_reception_status,
+        "missing_required_docs": rec_summary.get("missing_required_docs") or [],
         "eta": eta.isoformat() if eta else None,
         "whatsapp_critical": whatsapp_critical,
         "docs": docs,

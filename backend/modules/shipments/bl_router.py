@@ -20,7 +20,7 @@ from models.database_models import BillOfLading, LCMaster, Shipment, User
 from modules.auth.dependencies import get_current_user
 from core.permissions import require_min_role
 from modules.shipments.extractors.bl_extractor import extract_bl_from_image
-from infrastructure.document_ai.document_ai import ExtractionError
+from infrastructure.document_ai.document_ai import ExtractionError, safe_extract
 from infrastructure.document_ai.segmentation_response import segmentation_warnings, strip_extraction_internals
 from modules.shipments import bl_service as svc
 from modules.shipments.bl_schemas import BLLinkLC, BLSave, BLStatusUpdate
@@ -197,22 +197,52 @@ def upload_and_extract(
     with open(tmp_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
+    existing_bl_id = None
+    if shipment_id:
+        shipment_bl = (db.query(BillOfLading)
+                         .filter(BillOfLading.shipment_id == shipment_id)
+                         .order_by(BillOfLading.bl_id.desc()).first())
+        if shipment_bl:
+            existing_bl_id = shipment_bl.bl_id
+
     try:
-        extracted = extract_bl_from_image(tmp_path, settings.ANTHROPIC_API_KEY)
-    except ExtractionError as e:
-        _safe_remove(tmp_path)
-        logger.error(f"BL extraction failed for {file.filename}: {e.detail}")
-        raise HTTPException(status_code=422, detail=e.user_message)
+        extracted, extraction_error = safe_extract(
+            extract_bl_from_image, tmp_path, settings.ANTHROPIC_API_KEY,
+            doc_label=f"Bill of Lading, shipment_id={shipment_id}, file={file.filename}",
+        )
     except Exception as e:
         _safe_remove(tmp_path)
         logger.error(f"BL extraction failed for {file.filename}: {type(e).__name__}: {e}",
                      exc_info=True)
-        raise HTTPException(
-            status_code=422,
-            detail="Could not read this Bill of Lading automatically. Please try a clearer "
-                   "file, or enter the BL details manually.")
+        extracted, extraction_error = None, (
+            "Could not read this Bill of Lading automatically. Please try a clearer "
+            "file, or enter the BL details manually."
+        )
 
-    # Wrong-document guard: reject anything that isn't a Bill of Lading.
+    existing_dict: dict = {}
+    if existing_bl_id:
+        existing_bl = db.query(BillOfLading).filter(BillOfLading.bl_id == existing_bl_id).first()
+        if existing_bl:
+            existing_dict = svc.bl_to_dict(existing_bl, db=db)
+
+    if extraction_error:
+        stage_root = staged_dir("bl_documents", bl_dir)
+        os.makedirs(stage_root, exist_ok=True)
+        staged_name = f"{uuid.uuid4().hex}{ext}"
+        stage_path = os.path.join(stage_root, staged_name)
+        os.replace(tmp_path, stage_path)
+        meter_document_accepted(tenant.organization_id, file_path=stage_path)
+        return {
+            "staged_file": staged_name,
+            "original_filename": file.filename,
+            "existing_bl_id": existing_bl_id,
+            "is_pdf": ext == ".pdf",
+            "extracted": existing_dict,
+            "extraction_failed": True,
+            "extraction_message": extraction_error,
+            "had_previous_data": bool(existing_dict),
+        }
+
     if extracted.get("is_bill_of_lading") is False:
         _safe_remove(tmp_path)
         detected = extracted.get("document_type") or "a different document"
@@ -222,7 +252,6 @@ def upload_and_extract(
                    f"Please upload a Bill of Lading.")
 
     incoming_number = (extracted.get("bl_number") or "").strip()
-    existing_bl_id = None
 
     if incoming_number:
         match = (db.query(BillOfLading)
@@ -231,12 +260,41 @@ def upload_and_extract(
         if match:
             existing_bl_id = match.bl_id
 
-    if existing_bl_id is None and shipment_id:
-        shipment_bl = (db.query(BillOfLading)
-                         .filter(BillOfLading.shipment_id == shipment_id)
-                         .order_by(BillOfLading.bl_id.desc()).first())
-        if shipment_bl:
-            existing_bl_id = shipment_bl.bl_id
+    if existing_bl_id:
+        existing_bl = db.query(BillOfLading).filter(BillOfLading.bl_id == existing_bl_id).first()
+        if existing_bl:
+            from infrastructure.documents.merge_policy import merge_extracted_with_existing
+            from modules.shipments.bl_service import BL_SCALAR_FIELDS
+
+            existing_dict = svc.bl_to_dict(existing_bl, db=db)
+            merge_result = merge_extracted_with_existing(
+                existing_dict, extracted, existing_bl.field_sources,
+                scalar_fields=BL_SCALAR_FIELDS,
+            )
+            extracted = merge_result["extracted"]
+            if merge_result["conflicts"]:
+                merge_result["staged_file"] = None  # filled below after stage
+                # stage first, then return merge preview
+                stage_root = staged_dir("bl_documents", bl_dir)
+                os.makedirs(stage_root, exist_ok=True)
+                staged_name = f"{uuid.uuid4().hex}{ext}"
+                stage_path = os.path.join(stage_root, staged_name)
+                os.replace(tmp_path, stage_path)
+                meter_document_accepted(tenant.organization_id, file_path=stage_path)
+                bl_type = resolve_bl_type(extracted, None, db)
+                extracted["bl_type"] = bl_type
+                warnings = segmentation_warnings(extracted, "bl")
+                strip_extraction_internals(extracted)
+                return {
+                    "staged_file": staged_name,
+                    "original_filename": file.filename,
+                    "existing_bl_id": existing_bl_id,
+                    "extracted": extracted,
+                    "conflicts": merge_result["conflicts"],
+                    "is_pdf": ext == ".pdf",
+                    "warnings": warnings,
+                    "extraction_failed": False,
+                }
 
     stage_root = staged_dir("bl_documents", bl_dir)
     os.makedirs(stage_root, exist_ok=True)

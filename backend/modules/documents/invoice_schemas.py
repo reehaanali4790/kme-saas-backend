@@ -97,6 +97,7 @@ class InvoiceSave(BaseModel):
     total_coils: Optional[int] = None
 
     line_items: Optional[List[InvoiceLineItemIn]] = None
+    confirm_overwrites: Optional[List[str]] = None
 
     @field_validator("invoice_date", "upload_date", mode="before")
     @classmethod

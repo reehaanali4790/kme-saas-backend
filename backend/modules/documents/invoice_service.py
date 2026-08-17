@@ -184,8 +184,13 @@ def apply_staged_document(inv: CommercialInvoice, data: InvoiceSave):
     )
     if dest:
         replace_document_path(inv, dest, orig)
+        inv.file_pending = False
     if data.raw_extracted_data is not None:
         inv.raw_extracted_data = data.raw_extracted_data
+
+
+def _sync_invoice_file_pending(inv: CommercialInvoice) -> None:
+    inv.file_pending = not (inv.document_path and os.path.exists(inv.document_path))
 
 
 def _resolve_invoice(db: Session, data: InvoiceSave, user_id: int) -> CommercialInvoice:
@@ -219,12 +224,33 @@ def _resolve_invoice(db: Session, data: InvoiceSave, user_id: int) -> Commercial
 def save_invoice(db: Session, data: InvoiceSave, user_id: int) -> CommercialInvoice:
     inv = _resolve_invoice(db, data, user_id)
 
+    overwrites = set(data.confirm_overwrites or [])
+    if overwrites and inv.field_sources:
+        for field in overwrites:
+            if hasattr(data, field) and field in data.model_fields_set:
+                setattr(inv, field, getattr(data, field))
+                sources = dict(inv.field_sources or {})
+                sources[field] = "EXTRACTED"
+                inv.field_sources = sources
+
     apply_invoice_fields(inv, data, user_id)
     normalize_invoice_parties(inv, db)
     apply_staged_document(inv, data)
+    _sync_invoice_file_pending(inv)
+    if not data.staged_file and inv.source == "MANUAL":
+        inv.file_pending = True
+        sources = dict(inv.field_sources or {})
+        for field in STR_FIELDS + DEC_FIELDS + ["total_coils"]:
+            val = getattr(inv, field, None)
+            if val not in (None, ""):
+                sources[field] = sources.get(field) or "MANUAL"
+        inv.field_sources = sources or None
     inv.status = "VERIFIED"
     db.flush()
     replace_line_items(inv, data.line_items, db)
+    if inv.shipment_id:
+        from modules.shipments.services import touch_docs_reception
+        touch_docs_reception(inv.shipment_id, db)
     return inv
 
 

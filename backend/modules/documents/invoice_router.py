@@ -22,7 +22,7 @@ from infrastructure.document_ai.segmentation_response import segmentation_warnin
 from core.platform_metering import enforce_document_quota, meter_document_accepted
 from modules.documents.extractors.invoice_extractor import extract_invoice
 from modules.documents import invoice_service as svc
-from modules.documents.invoice_schemas import InvoiceSave
+from modules.documents.invoice_schemas import InvoiceSave, STR_FIELDS, DEC_FIELDS
 from modules.workflow.helpers import check_gate
 from modules.workflow.constants import ACTION_UPLOAD_INVOICE
 from utils.staging import stage_upload
@@ -97,6 +97,29 @@ def upload_and_extract(
     partial = bool(extracted.get("_extraction_partial"))
     warnings = segmentation_warnings(extracted, "invoice")
     strip_extraction_internals(extracted)
+
+    if existing:
+        from infrastructure.documents.merge_policy import merge_extracted_with_existing
+
+        merge_result = merge_extracted_with_existing(
+            existing_dict, extracted, existing.field_sources,
+            scalar_fields=STR_FIELDS + DEC_FIELDS + ["total_coils"],
+            line_items_key="line_items",
+        )
+        extracted = merge_result["extracted"]
+        if merge_result["conflicts"]:
+            return {
+                "staged_file": staged_name,
+                "original_filename": file.filename,
+                "existing_id": existing_id,
+                "is_pdf": ext == ".pdf",
+                "extracted": extracted,
+                "conflicts": merge_result["conflicts"],
+                "line_item_conflicts": merge_result.get("line_item_conflicts") or [],
+                "extraction_failed": False,
+                "warnings": warnings,
+            }
+
     return {
         "staged_file": staged_name,
         "original_filename": file.filename,

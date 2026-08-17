@@ -38,11 +38,19 @@ _can_write = require_min_role("ADMIN", "MANAGER", "OPERATOR")
 @router.post("/", response_model=ShipmentCreateResult)
 def create_shipment(data: ShipmentCreate, request: Request, db: Session = Depends(get_tenant_db),
                     current_user: User = Depends(_can_write)):
-    check_shipment_create(db, request, lc_id=data.lc_id, user_id=current_user.user_id,
-                          override_reason=data.override_reason)
+    check_shipment_create(
+        db, request,
+        contract_id=data.contract_id,
+        import_mode=data.import_mode,
+        lc_id=data.lc_id,
+        user_id=current_user.user_id,
+        override_reason=data.override_reason,
+    )
     shipment, balance = svc.create_shipment(data, db, created_by=current_user.user_id)
-    logger.info(f"Shipment created: id={shipment.shipment_id}, lc_id={data.lc_id}, "
-                f"category={shipment.category}")
+    logger.info(
+        f"Shipment created: id={shipment.shipment_id}, contract_id={data.contract_id}, "
+        f"import_mode={data.import_mode}, lc_id={data.lc_id}, category={shipment.category}"
+    )
     return ShipmentCreateResult(shipment_id=shipment.shipment_id, category=shipment.category,
                                  lc_balance=balance)
 
@@ -56,6 +64,7 @@ def list_shipments(
     status: Optional[List[str]] = Query(None, description="OR'd when multiple"),
     lc_id: Optional[int] = Query(None),
     validation_status: Optional[str] = Query(None),
+    exception: Optional[str] = Query(None, description="Exception queue filter"),
     search: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -89,6 +98,14 @@ def list_shipments(
         q = q.filter(Shipment.validation_status == validation_status.upper())
     if lc_id:
         q = q.filter(Shipment.lc_id == lc_id)
+    if exception:
+        from modules.shipments import exceptions_service as exc_svc
+
+        exc = exc_svc.list_exceptions(db, queue=exception, limit=500)
+        ids = [i["shipment_id"] for i in exc.get("items") or []]
+        if not ids:
+            return {"total": 0, "page": page, "page_size": page_size, "items": []}
+        q = q.filter(Shipment.shipment_id.in_(ids))
     if search:
         term = f"%{search.upper()}%"
         q = q.filter(
@@ -128,6 +145,18 @@ def shipment_stats(db: Session = Depends(get_tenant_db), current_user: User = De
             "discrepancies": discrepant, "gd_pending": gd_pending}
 
 
+@router.get("/exceptions")
+def shipment_exceptions(
+    queue: Optional[str] = Query(None, description="landed_awaiting_docs | partial_documentation | ..."),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+):
+    from modules.shipments import exceptions_service as exc_svc
+
+    return exc_svc.list_exceptions(db, queue=queue, limit=limit)
+
+
 # ---------------------------------------------------------------------------
 # By LC (single-LC detail view data)
 # ---------------------------------------------------------------------------
@@ -146,7 +175,7 @@ def shipments_for_lc(lc_id: int, db: Session = Depends(get_tenant_db),
     ).filter(Shipment.lc_id == lc_id, Shipment.is_deleted.is_(False)) \
      .order_by(Shipment.created_at.asc()).all()
     return {
-        "lc_id": lc_id, "lc_number": lc.lc_number,
+        "lc_id": lc_id, "lc_number": lc.lc_number, "contract_id": lc.contract_id,
         "balance": svc.compute_lc_balance(lc_id, db),
         "shipments": [svc.shipment_summary(s) for s in rows],
     }
@@ -284,7 +313,9 @@ def search_lcs(q: str = Query(..., min_length=1), db: Session = Depends(get_tena
     for lc in lcs:
         bal = svc.compute_lc_balance(lc.lc_id, db)
         out.append({
-            "lc_id": lc.lc_id, "lc_number": lc.lc_number,
+            "lc_id": lc.lc_id,
+            "contract_id": lc.contract_id,
+            "lc_number": lc.lc_number,
             "supplier_name": lc.supplier_name,
             "lc_date": lc.lc_date.isoformat() if lc.lc_date else None,
             "status": lc.status, "shipment_count": len(lc.shipments),

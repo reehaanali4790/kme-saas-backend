@@ -86,26 +86,17 @@ def resolve_next_step(
     action = (action or "").lower() or None
     doc_type = (doc_type or "").lower() or None
 
-    # --- Shipments: create shipment without LCs ---
+    # --- Shipments: create shipment (LC-backed or non-LC from contract) ---
     if page == "shipments" and action in ("create_shipment", None):
         if action == "create_shipment" or (context == "action"):
-            if not _org_has_lcs(db):
-                awaiting = _first_contract_awaiting_lc(db)
-                if awaiting:
-                    return _blocked_result(
-                        blocker="Open an LC for your contract before creating a shipment",
-                        required_step="lc",
-                        contract_id=awaiting.contract_id,
-                    )
-                if not _org_has_contracts(db):
-                    return _blocked_result(
-                        blocker="Upload a supplier contract before creating shipments",
-                        required_step="contract",
-                    )
+            if not _org_has_contracts(db):
                 return _blocked_result(
-                    blocker="Create an LC linked to a contract before adding shipments",
-                    required_step="contract_pick",
+                    blocker="Upload a supplier contract before creating shipments",
+                    required_step="contract",
                 )
+            # Non-LC path: contract alone is enough; LC path still preferred when LCs exist.
+            if not _org_has_lcs(db):
+                return _allowed_result(hint="non_lc_available")
 
     # --- Create LC without contract ---
     if page == "create-lc":
@@ -189,32 +180,34 @@ def resolve_next_step(
         return _blocked_result(blocker="Link LC to a contract", required_step="contract_pick")
 
     if action == ACTION_CREATE_SHIPMENT:
+        if not _org_has_contracts(db):
+            return _blocked_result(blocker="Upload a contract first", required_step="contract")
         if lc_id:
             lc = db.query(LCMaster).filter(LCMaster.lc_id == lc_id).first()
             if not lc:
                 return _blocked_result(blocker="LC not found", required_step="lc")
-        elif not _org_has_lcs(db):
-            return _blocked_result(blocker="Create an LC first", required_step="contract_pick")
+        # non-LC create: contract_id validated at API layer
 
     # --- Empty-state hints ---
     if page == "shipments" and context == "empty_state":
-        if not _org_has_lcs(db):
-            if not _org_has_contracts(db):
-                return _blocked_result(
-                    blocker="Start by uploading your supplier contract",
-                    required_step="contract",
-                )
-            awaiting = _first_contract_awaiting_lc(db)
-            if awaiting:
-                return _blocked_result(
-                    blocker="Open an LC for your contract, then create a shipment",
-                    required_step="lc",
-                    contract_id=awaiting.contract_id,
-                )
+        if not _org_has_contracts(db):
             return _blocked_result(
-                blocker="Create an LC from Contracts before adding shipments",
-                required_step="contract_pick",
+                blocker="Start by uploading your supplier contract",
+                required_step="contract",
             )
+        if not _org_has_lcs(db):
+            return _allowed_result(hint="Create a non-LC shipment from your contract")
+        awaiting = _first_contract_awaiting_lc(db)
+        if awaiting:
+            return _blocked_result(
+                blocker="Open an LC for your contract, then create a shipment — or use non-LC for TT/CAD",
+                required_step="lc",
+                contract_id=awaiting.contract_id,
+            )
+        return _blocked_result(
+            blocker="Create an LC from Contracts, or start a non-LC shipment",
+            required_step="contract_pick",
+        )
 
     if page == "contracts" and context == "empty_state":
         return _blocked_result(

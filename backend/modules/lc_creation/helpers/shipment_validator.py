@@ -21,6 +21,8 @@ from models.database_models import (
     Contract,
 )
 from modules.shipments.services import recompute_shipment_status
+from modules.shipments.docs_reception import docs_reception_summary
+from modules.workflow.import_paths import is_lc_backed, normalize_import_mode
 
 
 def _norm_hs(code):
@@ -170,8 +172,44 @@ def validate_shipment(shipment_id: int, db: Session) -> dict:
     gd = _primary(s.goods_declarations)
     fi = _primary(s.financial_instruments)
     lc = db.query(LCMaster).filter(LCMaster.lc_id == s.lc_id).first() if s.lc_id else None
+    lc_backed = is_lc_backed(s.import_mode)
+    contract = db.query(Contract).filter(Contract.contract_id == s.contract_id).first() if s.contract_id else None
+    rec = docs_reception_summary(s)
 
     checks: list[_Check] = []
+
+    # ---- 0. On port without BL (critical) ----
+    c = _Check("BL Present When On Port", "DATE")
+    if rec.get("on_port") and not bl:
+        c.status, c.message = "FAIL", "Vessel is on port but no Bill of Lading is recorded."
+    elif rec.get("on_port") and bl:
+        c.status, c.message = "PASS", "Bill of Lading recorded while vessel is on port."
+    else:
+        c.status, c.message = "SKIPPED", "Vessel not on port."
+    checks.append(c)
+
+    # ---- 0b. On port without packing (warning) ----
+    c = _Check("Packing When On Port", "DATE")
+    if rec.get("on_port") and not pkg:
+        c.status, c.message = "WARNING", "Vessel on port — packing list not yet received."
+    else:
+        c.status, c.message = "SKIPPED", "Not applicable."
+    checks.append(c)
+
+    # ---- 0c. Non-LC contract vs invoice value ----
+    if not lc_backed and contract and inv and inv.total_amount_usd and contract.items:
+        c = _Check("Invoice vs Contract Value", "PRICE")
+        ctr_amt = sum(
+            float(i.lc_amount or i.purchase_amount or 0) for i in contract.items
+        )
+        inv_amt = float(inv.total_amount_usd)
+        if ctr_amt and inv_amt > ctr_amt * 1.5:
+            c.status, c.message = "WARNING", (
+                f"Invoice total {inv_amt:.2f} USD is much higher than contract total {ctr_amt:.2f} USD."
+            )
+        else:
+            c.status, c.message = "PASS", "Invoice total is within reasonable range of contract value."
+        checks.append(c)
 
     # ---- 1. Total coils match (BL vs Invoice vs Packing) ----
     c = _Check("Total Coils Match", "COUNT")
@@ -221,7 +259,9 @@ def validate_shipment(shipment_id: int, db: Session) -> dict:
     c = _Check("LC Reference Match", "DESCRIPTION")
     c.inv = inv.documentary_credit_number if inv else None
     c.lc = lc.lc_number if lc else None
-    if not c.inv or not c.lc:
+    if not lc_backed:
+        c.status, c.message = "SKIPPED", "Non-LC import — LC reference check not applicable."
+    elif not c.inv or not c.lc:
         c.status, c.message = "SKIPPED", "Invoice credit number or LC number missing."
     else:
         a, b = c.inv.strip().upper(), c.lc.strip().upper()
@@ -234,7 +274,9 @@ def validate_shipment(shipment_id: int, db: Session) -> dict:
     # ---- 5. BL date within LC validity (<= expiry / last ship date) ----
     c = _Check("Ship Date Within LC Validity", "DATE")
     bl_date = bl.bl_date if bl else None
-    if bl_date and lc:
+    if not lc_backed:
+        c.status, c.message = "SKIPPED", "Non-LC import — LC validity check not applicable."
+    elif bl_date and lc:
         c.bl = bl_date.isoformat()
         limit = lc.last_ship_date or lc.expiry_date
         c.lc = limit.isoformat() if limit else None
@@ -345,6 +387,8 @@ def validate_shipment(shipment_id: int, db: Session) -> dict:
 
     # Re-derive the automatic shipment status (docs may have just changed).
     recompute_shipment_status(s)
+    from modules.shipments.docs_reception import recompute_docs_reception_status
+    recompute_docs_reception_status(s, db)
     db.commit()
 
     summary = {"PASS": 0, "FAIL": 0, "WARNING": 0, "SKIPPED": 0}

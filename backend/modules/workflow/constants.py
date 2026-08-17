@@ -1,4 +1,4 @@
-"""Workflow action identifiers — no imports from other modules."""
+# Path-aware import modes and required-doc matrix: see import_paths.py
 
 ACTION_UPLOAD_CONTRACT = "upload_contract"
 ACTION_UPLOAD_LC = "upload_lc"

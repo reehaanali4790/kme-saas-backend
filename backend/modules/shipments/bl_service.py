@@ -204,8 +204,19 @@ def apply_staged_document(bl: BillOfLading, data: BLSave, upload_dir: Optional[s
     )
     if dest:
         replace_document_path(bl, dest, orig)
+        bl.file_pending = False
     if data.raw_extracted_data is not None:
         bl.raw_extracted_data = data.raw_extracted_data
+
+
+def _sync_file_pending(bl: BillOfLading) -> None:
+    bl.file_pending = not (bl.document_path and os.path.exists(bl.document_path))
+
+
+BL_SCALAR_FIELDS = [
+    "bl_number", "vessel_name", "voyage_number", "port_of_loading", "port_of_discharge",
+    "gross_weight_mt", "net_weight_mt", "package_count", "goods_description", "bl_type",
+]
 
 
 def create_bl(data: BLSave, db: Session, user_id: int,
@@ -223,7 +234,26 @@ def create_bl(data: BLSave, db: Session, user_id: int,
         db.flush()
 
     apply_bl_fields(bl, data, user_id)
+
+    overwrites = set(data.confirm_overwrites or [])
+    if overwrites and bl.field_sources:
+        for field in overwrites:
+            if hasattr(data, field) and field in data.model_fields_set:
+                setattr(bl, field, getattr(data, field))
+                sources = dict(bl.field_sources or {})
+                sources[field] = "EXTRACTED"
+                bl.field_sources = sources
+
     apply_staged_document(bl, data, upload_dir=upload_dir)
+    _sync_file_pending(bl)
+    if not data.staged_file and bl.source == "MANUAL":
+        bl.file_pending = True
+        sources = dict(bl.field_sources or {})
+        for field in BL_SCALAR_FIELDS:
+            val = getattr(bl, field, None)
+            if val not in (None, ""):
+                sources[field] = sources.get(field) or "MANUAL"
+        bl.field_sources = sources or None
     normalize_bl_parties(bl, db)
     if not bl.bl_type:
         bl.bl_type = resolve_bl_type(bl.raw_extracted_data, bl, db)
@@ -239,7 +269,13 @@ def create_bl(data: BLSave, db: Session, user_id: int,
         sync_shipment_from_bl(bl, db)
         if bl.shipment_id:
             from infrastructure.activity.activity_service import log_activity
-            log_activity(db, bl.shipment_id, user_id, "UPLOAD", doc_type="Bill of Lading")
+            from modules.shipments.services import touch_docs_reception
+
+            action = "MANUAL_STUB_CREATED" if bl.file_pending else "UPLOAD"
+            if data.staged_file and not bl.file_pending:
+                log_activity(db, bl.shipment_id, user_id, "FILE_ATTACHED", doc_type="Bill of Lading")
+            log_activity(db, bl.shipment_id, user_id, action, doc_type="Bill of Lading")
+            touch_docs_reception(bl.shipment_id, db)
         db.commit()
 
     return bl

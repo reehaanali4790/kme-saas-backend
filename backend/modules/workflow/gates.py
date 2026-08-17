@@ -29,6 +29,12 @@ from modules.workflow.constants import (
     ACTION_UPLOAD_PACKING,
     MANAGER_ROLES,
 )
+from modules.workflow.import_paths import (
+    DOCS_RECEPTION_AWAITING,
+    fi_required,
+    missing_required_docs,
+    normalize_import_mode,
+)
 
 
 def shipment_load_options():
@@ -73,7 +79,30 @@ class WorkflowBlocked(HTTPException):
 
 
 def _core_docs_done(s: Shipment) -> bool:
-    return bool(s.bill_of_ladings and s.commercial_invoices and s.packing_lists)
+    return not missing_required_docs(
+        normalize_import_mode(s.import_mode),
+        has_bl=bool(s.bill_of_ladings),
+        has_invoice=bool(s.commercial_invoices),
+        has_packing=bool(s.packing_lists),
+        has_fi=bool(s.financial_instruments),
+    )
+
+
+def _assert_gd_docs_reception(s: Shipment, shipment_id: int) -> None:
+    """Block GD when vessel is on port and required docs are still missing."""
+    from modules.shipments.docs_reception import docs_reception_summary
+
+    summary = docs_reception_summary(s)
+    if (s.docs_reception_status or "") == DOCS_RECEPTION_AWAITING or summary.get("on_port"):
+        missing = summary.get("missing_required_docs") or []
+        if missing and summary.get("on_port"):
+            raise WorkflowBlocked(
+                blocker=f"Vessel on port — missing required documents: {', '.join(missing)}",
+                required_step="docs_core",
+                shipment_id=shipment_id,
+                lc_id=s.lc_id,
+                doc_type="bl",
+            )
 
 
 def _validation_blocked(s: Shipment) -> tuple[bool, Optional[str]]:
@@ -174,7 +203,9 @@ def assert_step_allowed(
         return
 
     if action in (ACTION_UPLOAD_FI, ACTION_UPLOAD_INSURANCE):
-        if not core_done:
+        if action == ACTION_UPLOAD_FI and not fi_required(s.import_mode):
+            return
+        if not _core_docs_done(s):
             raise WorkflowBlocked(
                 blocker="Complete core documents (BL, Invoice, Packing) first",
                 required_step="docs_core",
@@ -192,7 +223,7 @@ def assert_step_allowed(
         ACTION_UPLOAD_INTO_BOND_GD,
         ACTION_UPLOAD_EX_BOND_GD,
     ):
-        if not core_done:
+        if not _core_docs_done(s):
             raise WorkflowBlocked(
                 blocker="Complete core documents (BL, Invoice, Packing) first",
                 required_step="docs_core",
@@ -200,6 +231,7 @@ def assert_step_allowed(
                 lc_id=s.lc_id,
                 doc_type="bl",
             )
+        _assert_gd_docs_reception(s, shipment_id)
         if val_blocked:
             raise WorkflowBlocked(
                 blocker=val_msg or "Resolve validation failures first",
@@ -329,17 +361,39 @@ def assert_lc_upload_allowed(
         )
 
 
-def assert_shipment_create_allowed(db: Session, *, lc_id: int) -> None:
-    """LC must exist before creating a shipment."""
-    from models.database_models import LCMaster
+def assert_shipment_create_allowed(
+    db: Session,
+    *,
+    contract_id: int,
+    import_mode: str = "LC_BACKED",
+    lc_id: Optional[int] = None,
+) -> None:
+    """Contract must exist; LC required only for LC-backed imports."""
+    from models.database_models import Contract, LCMaster
 
-    lc = db.query(LCMaster).filter(LCMaster.lc_id == lc_id).first()
-    if not lc:
+    contract = db.query(Contract).filter(Contract.contract_id == contract_id).first()
+    if not contract:
         raise WorkflowBlocked(
-            blocker="LC not found — create or import an LC first",
-            required_step="lc",
-            lc_id=lc_id,
+            blocker="Contract not found — upload or select a contract first",
+            required_step="contract",
+            contract_id=contract_id,
         )
+    mode = normalize_import_mode(import_mode)
+    if mode == "LC_BACKED":
+        if not lc_id:
+            raise WorkflowBlocked(
+                blocker="LC is required for LC-backed shipments",
+                required_step="lc",
+                contract_id=contract_id,
+            )
+        lc = db.query(LCMaster).filter(LCMaster.lc_id == lc_id).first()
+        if not lc:
+            raise WorkflowBlocked(
+                blocker="LC not found — create or import an LC first",
+                required_step="lc",
+                lc_id=lc_id,
+                contract_id=contract_id,
+            )
 
 
 def assert_lc_upload_allowed_for_user(
@@ -360,7 +414,9 @@ def assert_lc_upload_allowed_for_user(
 def assert_shipment_create_allowed_for_user(
     db: Session,
     *,
-    lc_id: int,
+    contract_id: int,
+    import_mode: str = "LC_BACKED",
+    lc_id: Optional[int] = None,
     user_id: int,
     role_name: Optional[str],
     override_reason: Optional[str] = None,
@@ -369,7 +425,9 @@ def assert_shipment_create_allowed_for_user(
         if role_name not in MANAGER_ROLES:
             raise HTTPException(status_code=403, detail="Only ADMIN or MANAGER can override workflow gates")
         return
-    assert_shipment_create_allowed(db, lc_id=lc_id)
+    assert_shipment_create_allowed(
+        db, contract_id=contract_id, import_mode=import_mode, lc_id=lc_id,
+    )
 
 
 def assert_step_allowed_for_user(

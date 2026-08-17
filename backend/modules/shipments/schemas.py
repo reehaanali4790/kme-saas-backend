@@ -6,7 +6,7 @@ response schema, same reasoning as schemas/bank_limits.py's /report endpoint.
 """
 from datetime import date
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -29,16 +29,29 @@ def _strip_or_none(v) -> Optional[str]:
 
 
 class ShipmentCreate(BaseModel):
-    lc_id: int
+    contract_id: int
+    import_mode: Literal["LC_BACKED", "NON_LC", "TT", "CAD"] = "LC_BACKED"
+    lc_id: Optional[int] = None
+    lc_waiver_reason: Optional[str] = None
     category: Optional[str] = None
     lot_number: Optional[str] = None
     shipment_ref: Optional[str] = None
     override_reason: Optional[str] = None
 
-    @field_validator("category", "lot_number", "shipment_ref", mode="before")
+    @field_validator("category", "lot_number", "shipment_ref", "lc_waiver_reason", mode="before")
     @classmethod
     def _strip(cls, v):
         return _strip_or_none(v)
+
+    @model_validator(mode="after")
+    def _validate_import_path(self) -> "ShipmentCreate":
+        if self.import_mode == "LC_BACKED":
+            if not self.lc_id:
+                raise ValueError("lc_id is required for LC-backed imports")
+        else:
+            if not (self.lc_waiver_reason or "").strip():
+                raise ValueError("lc_waiver_reason is required when import_mode is not LC_BACKED")
+        return self
 
 
 class ShipmentUpdate(BaseModel):

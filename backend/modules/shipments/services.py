@@ -90,7 +90,7 @@ from sqlalchemy.orm import Session
 from core.exceptions import NotFoundError
 from infrastructure.activity.activity_service import log_activity
 from infrastructure.normalization.normalization_service import payment_tenor
-from models.database_models import LCMaster, LCProduct, Shipment
+from models.database_models import Contract, LCMaster, LCProduct, Shipment
 from modules.shipments.schemas import ShipmentCreate, ShipmentUpdate
 from modules.shipments.shipment_metrics import resolve_coils, resolve_net_weight_mt
 from modules.shipments.eta_calc import estimate_eta
@@ -158,6 +158,24 @@ def compute_lc_balance(lc_id: int, db: Session) -> dict:
 def next_category(lc_id: int, db: Session) -> str:
     count = db.query(func.count(Shipment.shipment_id)).filter(Shipment.lc_id == lc_id).scalar() or 0
     return CATEGORY_ORDINALS[count] if count < len(CATEGORY_ORDINALS) else f"#{count + 1}"
+
+
+def next_category_for_contract(contract_id: int, db: Session) -> str:
+    count = db.query(func.count(Shipment.shipment_id)).filter(
+        Shipment.contract_id == contract_id,
+        Shipment.is_deleted.is_(False),
+    ).scalar() or 0
+    return CATEGORY_ORDINALS[count] if count < len(CATEGORY_ORDINALS) else f"#{count + 1}"
+
+
+def touch_docs_reception(shipment_id: int, db: Session) -> None:
+    """Recompute docs_reception_status after document changes."""
+    from modules.shipments.docs_reception import recompute_docs_reception_status
+
+    s = db.query(Shipment).filter(Shipment.shipment_id == shipment_id).first()
+    if s:
+        recompute_docs_reception_status(s, db)
+        db.commit()
 
 
 def _buyer_party(lc: Optional[LCMaster]) -> Optional[str]:
@@ -287,9 +305,20 @@ def shipment_summary(s: Shipment) -> dict:
     kgtl_kg = _kgtl_total_kg(gd)
     kgtl_mt, kgtl_diff_mt, kgtl_diff_status = _kgtl_qty_compare(gd_gross_mt, kgtl_kg)
     vs = resolve_vessel_status(s)
+    from modules.shipments.docs_reception import docs_reception_summary
+    from modules.workflow.import_paths import import_mode_label, normalize_import_mode
+
+    rec = docs_reception_summary(s)
     return {
         "shipment_id": s.shipment_id,
         "lc_id": s.lc_id,
+        "contract_id": s.contract_id,
+        "import_mode": normalize_import_mode(s.import_mode),
+        "import_mode_label": import_mode_label(s.import_mode),
+        "lc_waiver_reason": s.lc_waiver_reason,
+        "docs_reception_status": s.docs_reception_status,
+        "missing_required_docs": rec.get("missing_required_docs") or [],
+        "manual_stubs_pending_file": rec.get("manual_stubs_pending_file") or [],
         "lc_number": s.lc.lc_number if s.lc else None,
         "shipment_ref": s.shipment_ref,
         "category": s.category,
@@ -389,6 +418,8 @@ def shipment_detail(s: Shipment, db: Session) -> dict:
         "gross_weight_mt": n(b.gross_weight_mt),
         "package_count": b.package_count, "package_type": b.package_type,
         "has_document": bool(b.document_path and os.path.exists(b.document_path)),
+        "file_pending": bool(getattr(b, "file_pending", False)),
+        "source": b.source,
     } for b in ordered_docs(s.bill_of_ladings)]
 
     d["commercial_invoices"] = [{
@@ -403,6 +434,8 @@ def shipment_detail(s: Shipment, db: Session) -> dict:
         "total_net_weight_mt": n(i.total_net_weight_mt), "total_gross_weight_mt": n(i.total_gross_weight_mt),
         "status": i.status,
         "has_document": bool(i.document_path and os.path.exists(i.document_path)),
+        "file_pending": bool(getattr(i, "file_pending", False)),
+        "source": i.source,
         "line_items": [{
             "item_number": li.item_number, "size_thickness_mm": n(li.size_thickness_mm),
             "size_width_mm": n(li.size_width_mm), "quantity_mt": n(li.quantity_mt),
@@ -499,25 +532,53 @@ def get_shipment_or_404(shipment_id: int, db: Session, *, options=None) -> Shipm
 
 
 def create_shipment(data: ShipmentCreate, db: Session, created_by: int) -> tuple:
-    lc = db.query(LCMaster).filter(LCMaster.lc_id == data.lc_id).first()
-    if not lc:
-        raise NotFoundError("LC not found")
+    from modules.workflow.import_paths import IMPORT_MODE_LC_BACKED, DOCS_RECEPTION_NOT_STARTED
+    from infrastructure.activity.activity_service import log_activity
 
-    balance = compute_lc_balance(data.lc_id, db)
+    contract = db.query(Contract).filter(Contract.contract_id == data.contract_id).first()
+    if not contract:
+        raise NotFoundError("Contract not found")
+
+    balance: dict = {}
+    expected_qty = None
+    lc_id = data.lc_id
+
+    if data.import_mode == IMPORT_MODE_LC_BACKED:
+        lc = db.query(LCMaster).filter(LCMaster.lc_id == data.lc_id).first()
+        if not lc:
+            raise NotFoundError("LC not found")
+        if lc.contract_id and lc.contract_id != data.contract_id:
+            raise NotFoundError("LC does not belong to the selected contract")
+        balance = compute_lc_balance(data.lc_id, db)
+        expected_qty = Decimal(str(balance["lc_remaining_mt"])) if balance["lc_remaining_mt"] > 0 else None
+        category = data.category or next_category(data.lc_id, db)
+    else:
+        lc_id = None
+        balance = {}
+        category = data.category or next_category_for_contract(data.contract_id, db)
+
     shipment = Shipment(
-        lc_id=data.lc_id,
-        category=data.category or next_category(data.lc_id, db),
+        lc_id=lc_id,
+        contract_id=data.contract_id,
+        import_mode=data.import_mode,
+        lc_waiver_reason=data.lc_waiver_reason if data.import_mode != IMPORT_MODE_LC_BACKED else None,
+        docs_reception_status=DOCS_RECEPTION_NOT_STARTED,
+        category=category,
         lot_number=data.lot_number,
         shipment_ref=data.shipment_ref,
         status="PENDING",
         validation_status="PENDING",
-        # suggest remaining balance as the expected quantity for variance checking
-        expected_quantity_mt=Decimal(str(balance["lc_remaining_mt"])) if balance["lc_remaining_mt"] > 0 else None,
+        expected_quantity_mt=expected_qty,
         created_by=created_by,
     )
     db.add(shipment)
     db.commit()
     db.refresh(shipment)
+    log_activity(
+        db, shipment.shipment_id, created_by, "IMPORT_MODE_SET",
+        detail=f"{data.import_mode}" + (f": {data.lc_waiver_reason[:200]}" if data.lc_waiver_reason else ""),
+    )
+    db.commit()
     return shipment, balance
 
 

@@ -117,6 +117,7 @@ def apply_staged_document(p: PackingList, data: PackingSave):
     )
     if dest:
         replace_document_path(p, dest, orig)
+        p.file_pending = False
     if data.raw_extracted_data is not None:
         p.raw_extracted_data = data.raw_extracted_data
 
@@ -150,12 +151,16 @@ def save_packing(db: Session, data: PackingSave, user_id: int) -> PackingList:
 
     apply_fields(p, data, user_id)
     apply_staged_document(p, data)
+    p.file_pending = not (p.document_path and os.path.exists(p.document_path))
+    if not data.staged_file and p.source == "MANUAL":
+        p.file_pending = True
     p.status = "VERIFIED"
     db.flush()
     replace_line_items(p, data.line_items, db)
 
-    # mark shipment progressing
     if p.shipment_id:
+        from modules.shipments.services import touch_docs_reception
+        touch_docs_reception(p.shipment_id, db)
         s = db.query(Shipment).filter(Shipment.shipment_id == p.shipment_id).first()
         if s and s.status == "PENDING":
             s.status = "DOCUMENTS_RECEIVED"

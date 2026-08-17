@@ -790,6 +790,8 @@ class BillOfLading(Base):
     document_path: Mapped[str | None] = mapped_column(Text)
     raw_extracted_data: Mapped[Any | None] = mapped_column(JSONB)
     source: Mapped[str | None] = mapped_column(String(20), default='MANUAL')
+    file_pending: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    field_sources: Mapped[Any | None] = mapped_column(JSONB)
 
     # BL Header
     bl_number: Mapped[str | None] = mapped_column(String(100), index=True)
@@ -897,6 +899,10 @@ class Shipment(Base):
 
     shipment_id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     lc_id: Mapped[int | None] = mapped_column(Integer, ForeignKey('lc_master.lc_id', ondelete='SET NULL'), nullable=True, index=True)
+    contract_id: Mapped[int | None] = mapped_column(Integer, ForeignKey('contracts.contract_id', ondelete='SET NULL'), nullable=True, index=True)
+    import_mode: Mapped[str | None] = mapped_column(String(20), default='LC_BACKED')
+    lc_waiver_reason: Mapped[str | None] = mapped_column(Text)
+    docs_reception_status: Mapped[str | None] = mapped_column(String(20), default='NOT_STARTED', index=True)
     shipment_ref: Mapped[str | None] = mapped_column(String(100))               # internal reference / auto
     category: Mapped[str | None] = mapped_column(String(20))                     # FIRST / SECOND / THIRD ... (partial shipment label)
     lot_number: Mapped[str | None] = mapped_column(String(50))                   # import team's lot reference for this shipment
@@ -980,6 +986,7 @@ class Shipment(Base):
 
     # Relationships
     lc = relationship("LCMaster", back_populates="shipments")
+    contract = relationship("Contract", foreign_keys=[contract_id])
     bill_of_ladings = relationship("BillOfLading", back_populates="shipment")
     commercial_invoices = relationship("CommercialInvoice", back_populates="shipment", cascade="all, delete-orphan")
     packing_lists = relationship("PackingList", back_populates="shipment", cascade="all, delete-orphan")
@@ -1029,6 +1036,8 @@ class CommercialInvoice(Base):
     document_path: Mapped[str | None] = mapped_column(Text)
     raw_extracted_data: Mapped[Any | None] = mapped_column(JSONB)
     source: Mapped[str | None] = mapped_column(String(20), default='UPLOADED')
+    file_pending: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    field_sources: Mapped[Any | None] = mapped_column(JSONB)
 
     # Header
     invoice_number: Mapped[str | None] = mapped_column(String(100), index=True)
@@ -1118,6 +1127,8 @@ class PackingList(Base):
     document_path: Mapped[str | None] = mapped_column(Text)
     raw_extracted_data: Mapped[Any | None] = mapped_column(JSONB)
     source: Mapped[str | None] = mapped_column(String(20), default='UPLOADED')
+    file_pending: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    field_sources: Mapped[Any | None] = mapped_column(JSONB)
 
     # Header
     packing_number: Mapped[str | None] = mapped_column(String(100), index=True)
@@ -1643,6 +1654,8 @@ class FinancialInstrument(Base):
     document_path: Mapped[str | None] = mapped_column(Text)
     raw_extracted_data: Mapped[Any | None] = mapped_column(JSONB)
     source: Mapped[str | None] = mapped_column(String(20), default='UPLOADED')
+    file_pending: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    field_sources: Mapped[Any | None] = mapped_column(JSONB)
 
     # Basic information
     fi_number: Mapped[str | None] = mapped_column(String(100), index=True)       # Financial Instrument Unique No.
@@ -1714,6 +1727,8 @@ class InsuranceCertificate(Base):
     document_path: Mapped[str | None] = mapped_column(Text)
     raw_extracted_data: Mapped[Any | None] = mapped_column(JSONB)
     source: Mapped[str | None] = mapped_column(String(20), default='UPLOADED')
+    file_pending: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    field_sources: Mapped[Any | None] = mapped_column(JSONB)
 
     # Required extracted fields
     bl_number: Mapped[str | None] = mapped_column(String(100), index=True)
