@@ -81,6 +81,11 @@ MIGRATIONS = [
     "migrate_ai_usage_events.py",      # platform.ai_usage_events for SaaS Admin Suite AI metering
 ]
 
+# Tenant-schema patches — always run (including SaaS deploys where legacy public migrations are skipped).
+TENANT_PATCH_MIGRATIONS = [
+    "migrate_exception_paths.py",
+]
+
 
 def _fresh_saas_tenant_schema() -> bool:
     """True when tenant tables were created by ORM bootstrap (not legacy public upgrade)."""
@@ -127,6 +132,18 @@ def main():
         if script in SAAS_BOOTSTRAP_MIGRATIONS and _fresh_saas_tenant_schema():
             skip_legacy_public = True
             print("  Fresh SaaS tenant schema detected — skipping legacy public-schema migrations.")
+
+    for script in TENANT_PATCH_MIGRATIONS:
+        path = os.path.join(HERE, "scripts", "migrations", script)
+        if not os.path.exists(path):
+            print(f"  SKIP (not found): {script}")
+            continue
+        print(f"\n--- {script} (tenant patch) ---")
+        result = subprocess.run([sys.executable, path], cwd=HERE, env=env)
+        if result.returncode != 0:
+            print(f"\nMIGRATION FAILED: {script} (exit {result.returncode}). Aborting release.")
+            sys.exit(result.returncode)
+
     print("\n" + "=" * 60)
     print("All migrations applied successfully.")
     print("=" * 60)
