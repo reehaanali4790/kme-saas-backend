@@ -114,11 +114,9 @@ class Settings(BaseSettings):
     LC_MONITORING_DAYS: int = 40
     AUTO_EXPIRE_ENABLED: bool = True
 
-    # Background jobs — the APScheduler cron jobs (NBP rates, KPT crawlers) run
-    # in-process and are NOT safe to run on more than one web instance at once
-    # (every instance would fire its own copy of each job). Leave this on for a
-    # single-instance deploy; set to False on every instance except one if the
-    # web tier is ever scaled horizontally.
+    # Background jobs — APScheduler runs in-process. With Redis, a leader lock
+    # ensures only one replica fires jobs. Without Redis, set this False on every
+    # extra web replica.
     ENABLE_SCHEDULER: bool = True
 
     # Rate limiting (slowapi).
@@ -227,6 +225,7 @@ class Settings(BaseSettings):
     SENTRY_TRACES_SAMPLE_RATE: float = 0.1
 
     SIGNUP_RATE_LIMIT: str = "5/minute"
+    FORGOT_PASSWORD_RATE_LIMIT: str = "5/minute"
     DEFAULT_TRIAL_DAYS: int = 14
     
     # CORS — stored as a string so Railway/comma-separated env vars work on all

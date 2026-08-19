@@ -2,8 +2,9 @@
 Admin Endpoints — tenant-scoped user management via organization memberships.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
+import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, model_validator
@@ -19,6 +20,8 @@ from models.platform_models import User, UserSession, OrganizationMembership, Or
 from modules.auth.dependencies import get_current_user
 from modules.auth.services import AuthService
 from infrastructure.audit.audit_service import log_audit
+from infrastructure.email.mailer import send_email
+from config.settings import settings
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
 
@@ -47,7 +50,7 @@ class CreateUserRequest(BaseModel):
     username: str
     full_name: str
     email: str
-    password: str
+    password: Optional[str] = None
     role_name: Optional[str] = None
     role_id: Optional[int] = None
     phone_number: Optional[str] = None
@@ -160,28 +163,62 @@ def create_user(
     existing = AuthService.get_user_by_username(platform_db, req.username)
     if existing:
         AuthService.add_membership(
-            platform_db, existing.user_id, tenant.organization_id, role_name
+            platform_db, existing.user_id, tenant.organization_id, role_name,
+            invited_by=current_user.user_id,
+        )
+        send_email(
+            existing.email,
+            f"You've been added to {tenant.name}",
+            f"You now have access to {tenant.name}. Sign in at {settings.APP_PUBLIC_URL}/login",
         )
         return {"success": True, "user_id": existing.user_id, "message": "User added to organization."}
+
+    provided_password = (req.password or "").strip()
+    if provided_password and len(provided_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    invite_token = None
+    invite_expires = None
+    if not provided_password:
+        provided_password = secrets.token_urlsafe(24)
+        invite_token = secrets.token_urlsafe(32)
+        invite_expires = datetime.utcnow() + timedelta(days=7)
 
     user = AuthService.create_user(
         db=platform_db,
         username=req.username,
         email=req.email,
-        password=req.password,
+        password=provided_password,
         full_name=req.full_name,
         phone_number=req.phone_number,
         whatsapp_number=req.whatsapp_number,
         created_by=current_user.user_id,
     )
-    AuthService.add_membership(platform_db, user.user_id, tenant.organization_id, role_name)
+    AuthService.add_membership(
+        platform_db,
+        user.user_id,
+        tenant.organization_id,
+        role_name,
+        invited_by=current_user.user_id,
+        invite_token=invite_token,
+        invite_expires_at=invite_expires,
+    )
+    if invite_token:
+        send_email(
+            user.email,
+            f"You're invited to {tenant.name}",
+            f"Accept your invite and choose a password:\n{settings.APP_PUBLIC_URL}/accept-invite?token={invite_token}\n\nThis link expires in 7 days.",
+        )
+        message = f"Invite email sent to '{req.username}'."
+    else:
+        message = f"User '{req.username}' created."
     log_audit(
         tenant_db, current_user.user_id, "CREATE_USER", entity_type="USER", entity_id=user.user_id,
-        new_value={"username": user.username, "email": user.email, "role_name": role_name},
+        new_value={"username": user.username, "email": user.email, "role_name": role_name, "invited": bool(invite_token)},
         description=f"Created user '{req.username}'",
     )
     tenant_db.commit()
-    return {"success": True, "user_id": user.user_id, "message": f"User '{req.username}' created."}
+    return {"success": True, "user_id": user.user_id, "message": message}
 
 
 @router.put("/users/{user_id}")

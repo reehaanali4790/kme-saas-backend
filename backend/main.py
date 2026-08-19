@@ -359,13 +359,21 @@ async def startup_event():
     # the scheduler raise ZoneInfoNotFoundError and silently never start in production.
     # Pakistan has no daylight saving, so a constant +5 offset is always correct.
     #
-    # ENABLE_SCHEDULER guards all of this (jobs + the catch-up thread below): these run
-    # in-process, so more than one web instance running them concurrently would fire
-    # duplicate crons and duplicate catch-up fetches. Keep this True on exactly one
-    # instance if the web tier is ever scaled horizontally.
+    # ENABLE_SCHEDULER is a hard off-switch. When it is on, a Redis SET NX lock
+    # elects a single replica to run in-process jobs. Without Redis, extra replicas
+    # must still set ENABLE_SCHEDULER=false.
+    scheduler_should_run = False
     if not settings.ENABLE_SCHEDULER:
         logger.info("Scheduler disabled (ENABLE_SCHEDULER=false) - skipping cron jobs on this instance")
     else:
+        from core.scheduler_lock import acquire_scheduler_leadership, start_scheduler_lock_refresh
+        if acquire_scheduler_leadership():
+            scheduler_should_run = True
+            start_scheduler_lock_refresh()
+        else:
+            logger.info("Scheduler skipped — another replica holds the Redis leader lock")
+
+    if scheduler_should_run:
         try:
             from datetime import timezone as _tz, timedelta as _td
             from apscheduler.schedulers.background import BackgroundScheduler
@@ -547,6 +555,17 @@ async def startup_event():
 async def shutdown_event():
     """Run on application shutdown"""
     logger.info("Shutting down LME Monitoring System")
+    scheduler = getattr(app.state, "scheduler", None)
+    if scheduler is not None:
+        try:
+            scheduler.shutdown(wait=False)
+        except Exception:
+            logger.exception("Scheduler shutdown failed")
+    try:
+        from core.scheduler_lock import release_scheduler_leadership
+        release_scheduler_leadership()
+    except Exception:
+        logger.exception("Scheduler leader lock release failed")
 
 # Root endpoint
 @app.get("/")

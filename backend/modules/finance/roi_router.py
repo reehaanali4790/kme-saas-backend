@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from core.tenant import get_tenant_db
+from core.plan_limits import require_plan_feature
 from core.schemas import PaginationParams
 from models.database_models import User
 from modules.auth.dependencies import get_current_user
@@ -26,7 +27,11 @@ from modules.finance.roi_service import (
 )
 
 logger = logging.getLogger("uvicorn")
-router = APIRouter(prefix="/api/roi", tags=["ROI Intelligence"])
+router = APIRouter(
+    prefix="/api/roi",
+    tags=["ROI Intelligence"],
+    dependencies=[Depends(require_plan_feature("roi_finance"))],
+)
 
 
 def _parse_filters(

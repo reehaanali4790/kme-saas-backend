@@ -6,7 +6,13 @@ Single source of truth for these rules: the WeBOC tab, the SRO report and the al
 all call in here, so a rule change lands everywhere at once.
 
 Deadlines:
-  * GD filing deadline  = ETA + 18 days   (remind from 10 days before it)
+  * GD filing deadline  = ETA + 18 days until 30 Sep 2026;
+    from 1 Oct 2026 (FBR SRO 1346(I)/2026) file within 20 days of arrival.
+    Remind from 10 days before the deadline.
+  * Late-filing penalty estimate (SRO 1346, in force from 1 Oct 2026):
+      Rs 25,000/day for the first 5 days after the deadline, then Rs 50,000/day,
+      capped at Rs 1,000,000. Documented `section82_penalty_pkr` always wins
+      over this estimate.
   * Into-bond settlement = first IB GD date + 180 days
       (filing_date, else date parsed from GD number, else ETA)
       (remind from 20 days before it — i.e. from day 160 of 180)
@@ -34,8 +40,14 @@ from models.database_models import (
 
 logger = logging.getLogger("uvicorn")
 
-GD_FILING_DAYS = 18          # GD must be filed within 18 days of ETA
+GD_FILING_DAYS_LEGACY = 18   # pre-SRO 1346
+GD_FILING_DAYS_SRO1346 = 20  # FBR SRO 1346(I)/2026 from 1 Oct 2026
+SRO_1346_EFFECTIVE = date(2026, 10, 1)
+GD_FILING_DAYS = GD_FILING_DAYS_SRO1346  # display default; filing_deadline uses gd_filing_days()
 GD_FILING_ALERT_LEAD = 10    # start reminding 10 days before that deadline
+SECTION82_DAY1_TO_5_PKR = 25_000
+SECTION82_DAY6_PLUS_PKR = 50_000
+SECTION82_CAP_PKR = 1_000_000
 INTO_BOND_DAYS = 180         # bonded material must be lifted within 180 days of first IB
 BOND_WARN_LEAD = 20          # start reminding at day 160 of 180 (20 days remaining)
 WEIGHT_TOLERANCE_MT = 0.5    # same tolerance the shipment validator uses
@@ -266,8 +278,23 @@ def ib_anchor_date(gd: GoodsDeclaration) -> date | None:
 
 
 # ---------------------------------------------------------------------------
-# GD filing deadline (ETA + 18 days)
+# GD filing deadline (ETA + 18 days until 30 Sep 2026; + 20 days from 1 Oct 2026)
 # ---------------------------------------------------------------------------
+def gd_filing_days(as_of: date | None = None) -> int:
+    as_of = as_of or date.today()
+    return GD_FILING_DAYS_SRO1346 if as_of >= SRO_1346_EFFECTIVE else GD_FILING_DAYS_LEGACY
+
+
+def section82_penalty_estimate_pkr(days_late: int, as_of: date | None = None) -> int | None:
+    """Estimate only. Never overwrites extracted section82_penalty_pkr."""
+    as_of = as_of or date.today()
+    if as_of < SRO_1346_EFFECTIVE or days_late <= 0:
+        return None
+    first = min(days_late, 5) * SECTION82_DAY1_TO_5_PKR
+    rest = max(0, days_late - 5) * SECTION82_DAY6_PLUS_PKR
+    return min(first + rest, SECTION82_CAP_PKR)
+
+
 def gd_is_filed(gd: GoodsDeclaration) -> bool:
     """The GD counts as filed once the GD View is in (or the GD otherwise carries a number)."""
     return bool(gd.gd_view_uploaded or gd.gd_number or gd.filing_date or gd.final_gd_uploaded)
@@ -280,12 +307,15 @@ def filing_deadline(gd: GoodsDeclaration, today: date = None) -> dict:
     eta = gd.eta
     filed = gd_is_filed(gd)
     late = bool(gd.late_filed) or (gd.section82_penalty_pkr or 0) > 0
+    days_rule = gd_filing_days(today)
     if not eta:
         return {"eta": None, "deadline": None, "days_remaining": None,
                 "state": "LATE_FILED" if late else ("FILED" if filed else "NO_ETA"),
-                "filed": filed, "late_filed": late}
+                "filed": filed, "late_filed": late,
+                "filing_days": days_rule, "alert_lead_days": GD_FILING_ALERT_LEAD,
+                "penalty_estimate_pkr": None, "sro_1346_in_force": today >= SRO_1346_EFFECTIVE}
 
-    deadline = eta + timedelta(days=GD_FILING_DAYS)
+    deadline = eta + timedelta(days=days_rule)
     days = (deadline - today).days
     if late:
         state = "LATE_FILED"
@@ -297,9 +327,12 @@ def filing_deadline(gd: GoodsDeclaration, today: date = None) -> dict:
         state = "DUE_SOON"
     else:
         state = "OK"
+    days_late = abs(days) if days < 0 else 0
     return {"eta": eta.isoformat(), "deadline": deadline.isoformat(),
             "days_remaining": days, "state": state, "filed": filed, "late_filed": late,
-            "filing_days": GD_FILING_DAYS, "alert_lead_days": GD_FILING_ALERT_LEAD}
+            "filing_days": days_rule, "alert_lead_days": GD_FILING_ALERT_LEAD,
+            "penalty_estimate_pkr": section82_penalty_estimate_pkr(days_late, today),
+            "sro_1346_in_force": today >= SRO_1346_EFFECTIVE}
 
 
 # ---------------------------------------------------------------------------

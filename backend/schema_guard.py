@@ -101,4 +101,13 @@ def ensure_runtime_schema() -> list[str]:
         _seed_importers_if_needed()
     if applied:
         logger.info("Runtime schema guard applied: %s", ", ".join(applied))
+    try:
+        from models.database_models import Base, ContainerEvent, LCAmendment
+        Base.metadata.create_all(
+            bind=engine,
+            tables=[ContainerEvent.__table__, LCAmendment.__table__],
+            checkfirst=True,
+        )
+    except Exception as exc:
+        logger.warning("Schema guard create_all for importer-desk tables failed: %s", exc)
     return applied

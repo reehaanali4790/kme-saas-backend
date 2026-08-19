@@ -15,7 +15,9 @@ def summary(db: Session) -> dict:
     import orjson
     from core.redis import redis_cache
 
-    cache_key = "lme:dashboard:summary"
+    from core.cache_keys import dashboard_key
+
+    cache_key = dashboard_key("summary")
     cached_data = redis_cache.get(cache_key)
     if cached_data:
         try:
@@ -172,7 +174,9 @@ def arrivals(db: Session) -> dict:
     import orjson
     from core.redis import redis_cache
 
-    cache_key = "lme:dashboard:arrivals"
+    from core.cache_keys import dashboard_key
+
+    cache_key = dashboard_key("arrivals")
     cached_data = redis_cache.get(cache_key)
     if cached_data:
         try:
@@ -257,8 +261,9 @@ def workflow_overview(db: Session) -> dict:
     from modules.shipments import journey_service as journey_svc
     from modules.weboc.helpers.weboc_service import filing_deadline, bond_summary
 
-    schema = db.execute(text("SELECT current_schema()")).scalar() or "default"
-    cache_key = f"lme:dashboard:workflow:{schema}"
+    from core.cache_keys import dashboard_key
+
+    cache_key = dashboard_key("workflow")
     cached = redis_cache.get(cache_key)
     if cached:
         try:
@@ -377,11 +382,10 @@ def workflow_overview(db: Session) -> dict:
 def invalidate_dashboard_cache():
     print("\n--- CACHE INVALIDATE TRIGGERED ---")
     from core.redis import redis_cache
+    from core.cache_keys import dashboard_invalidate_patterns
     try:
-        redis_cache.delete("lme:dashboard:summary")
-        redis_cache.delete("lme:dashboard:arrivals")
-        redis_cache.delete("lme:dashboard:v2:summary")
-        # workflow keys are schema-scoped; best-effort delete via pattern not available — TTL is 5m
+        for pattern in dashboard_invalidate_patterns():
+            redis_cache.delete_pattern(pattern)
     except Exception:
         pass
 

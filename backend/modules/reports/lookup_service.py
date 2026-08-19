@@ -29,8 +29,10 @@ def search(db: Session, kind: str, q: str) -> list:
     import orjson
     from core.redis import redis_cache
 
+    from core.cache_keys import lookup_key
+
     query_param = norm(q) if q else "default"
-    cache_key = f"lme:lookup:{kind}:{query_param}"
+    cache_key = lookup_key(kind, query_param)
 
     # Try reading from cache
     cached_data = redis_cache.get(cache_key)
@@ -96,7 +98,8 @@ def add(db: Session, kind: str, data: LookupCreate, user_id: int) -> dict:
 
     # Invalidate cache for this lookup kind
     try:
-        redis_cache.delete_pattern(f"lme:lookup:{kind}:*")
+        from core.cache_keys import lookup_pattern
+        redis_cache.delete_pattern(lookup_pattern(kind))
     except Exception:
         pass
 

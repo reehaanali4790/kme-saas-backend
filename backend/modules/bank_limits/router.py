@@ -14,6 +14,7 @@ from models.database_models import BankLimit, User
 from modules.auth.dependencies import get_current_user
 from core.exceptions import ValidationError
 from core.permissions import require_min_role
+from core.plan_limits import require_plan_feature
 from infrastructure.normalization.normalization_service import company_key, company_resolver, matches_company_code
 from utils.parsing import parse_date, parse_float
 from . import services as svc
@@ -29,7 +30,11 @@ from .schemas import (
 
 logger = logging.getLogger("uvicorn")
 
-router = APIRouter(prefix="/api/bank-limits", tags=["Bank Limits"])
+router = APIRouter(
+    prefix="/api/bank-limits",
+    tags=["Bank Limits"],
+    dependencies=[Depends(require_plan_feature("bank_limits"))],
+)
 
 _can_write = require_min_role("ADMIN", "MANAGER", "OPERATOR")
 

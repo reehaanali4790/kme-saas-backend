@@ -233,6 +233,14 @@ def quota_report(db: Session, company: Optional[list[str]], main_sro_no: Optiona
         used = d["consumed_qty_mt"] or 0
         d["usage_pct"] = round(used / approved * 100, 1) if approved else None
         d["over_quota"] = approved is not None and used > approved
+        if d["over_quota"]:
+            d["quota_band"] = "exceeded"
+        elif d["usage_pct"] is not None and d["usage_pct"] >= 90:
+            d["quota_band"] = "90"
+        elif d["usage_pct"] is not None and d["usage_pct"] >= 80:
+            d["quota_band"] = "80"
+        else:
+            d["quota_band"] = None
         d["usage_lines"] = usage.get(a.approval_id, {}).get("lines", [])
         res = cr.resolve(d.get("company_name"))
         d["company_code"] = res.get("short_code")
@@ -253,6 +261,12 @@ def quota_report(db: Session, company: Optional[list[str]], main_sro_no: Optiona
             warnings.append(f"SRO quota exceeded — {name} ({r['company_name'] or 'no company'}): "
                             f"used {r['consumed_qty_mt']:,.3f} MT of {r['approved_qty_mt']:,.3f} MT "
                             f"approved (over by {over:,.3f} MT).")
+        elif r.get("quota_band") == "90":
+            warnings.append(f"SRO quota at 90% — {name} ({r['company_name'] or 'no company'}): "
+                            f"{r['usage_pct']}% used.")
+        elif r.get("quota_band") == "80":
+            warnings.append(f"SRO quota at 80% — {name} ({r['company_name'] or 'no company'}): "
+                            f"{r['usage_pct']}% used.")
         if r["status"] == "Expired":
             warnings.append(f"SRO quota expired — {name} ({r['company_name'] or 'no company'}) "
                             f"ended {r['end_date']}.")

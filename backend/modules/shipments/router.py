@@ -16,7 +16,10 @@ from models.database_models import (
 )
 from modules.auth.dependencies import get_current_user
 from core.permissions import require_min_role
-from modules.lc_creation.helpers.shipment_validator import validate_shipment
+from modules.lc_creation.helpers.shipment_validator import (
+    validate_shipment, discrepancy_pack, discrepancy_pack_for_lc,
+)
+from modules.shipments import container_events_service as cntr_svc
 from modules.shipments import services as svc
 from modules.shipments import journey_service as journey_svc
 from modules.shipments.schemas import ShipmentCreate, ShipmentCreateResult, ShipmentUpdate
@@ -161,6 +164,16 @@ def shipment_exceptions(
 # By LC (single-LC detail view data)
 # ---------------------------------------------------------------------------
 
+@router.get("/by-lc/{lc_id}/discrepancies")
+def lc_discrepancies(lc_id: int, db: Session = Depends(get_tenant_db),
+                     current_user: User = Depends(get_current_user)):
+    """Aggregate discrepancy packs for every shipment on the LC."""
+    try:
+        return discrepancy_pack_for_lc(lc_id, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.get("/by-lc/{lc_id}")
 def shipments_for_lc(lc_id: int, db: Session = Depends(get_tenant_db),
                      current_user: User = Depends(get_current_user)):
@@ -210,6 +223,41 @@ def shipment_timeline(shipment_id: int, db: Session = Depends(get_tenant_db),
                       current_user: User = Depends(get_current_user)):
     """All critical milestone dates for one shipment."""
     return journey_svc.build_timeline(shipment_id, db)
+
+
+@router.get("/{shipment_id}/discrepancies")
+def shipment_discrepancies(shipment_id: int, db: Session = Depends(get_tenant_db),
+                           current_user: User = Depends(get_current_user)):
+    try:
+        return discrepancy_pack(shipment_id, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/{shipment_id}/containers")
+def list_container_events(shipment_id: int, db: Session = Depends(get_tenant_db),
+                          current_user: User = Depends(get_current_user)):
+    return cntr_svc.list_container_state(shipment_id, db)
+
+
+@router.post("/{shipment_id}/containers")
+def create_container_event(shipment_id: int, data: dict, db: Session = Depends(get_tenant_db),
+                           current_user: User = Depends(_can_write)):
+    return cntr_svc.create_event(shipment_id, data, db, current_user.user_id)
+
+
+@router.put("/{shipment_id}/containers/{event_id}")
+def update_container_event(shipment_id: int, event_id: int, data: dict,
+                           db: Session = Depends(get_tenant_db),
+                           current_user: User = Depends(_can_write)):
+    return cntr_svc.update_event(shipment_id, event_id, data, db)
+
+
+@router.delete("/{shipment_id}/containers/{event_id}")
+def delete_container_event(shipment_id: int, event_id: int, db: Session = Depends(get_tenant_db),
+                           current_user: User = Depends(_can_write)):
+    cntr_svc.delete_event(shipment_id, event_id, db)
+    return {"success": True}
 
 
 @router.post("/{shipment_id}/validate")

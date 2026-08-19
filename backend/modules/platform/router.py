@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -14,7 +14,7 @@ from core.permissions import require_platform_admin
 from infrastructure.audit.audit_service import log_platform_audit
 from models.platform_models import Organization, OrganizationMembership, Plan, User
 from modules.auth.services import AuthService
-from modules.tenants.provision import provision_tenant, validate_slug
+from modules.tenants.provision import provision_tenant, validate_slug, destroy_tenant
 
 router = APIRouter(prefix="/api/platform", tags=["Platform"])
 
@@ -306,6 +306,33 @@ def archive_organization(
     )
     db.commit()
     return {"organization_id": org.organization_id, "status": org.status}
+
+
+@router.delete("/organizations/{org_id}")
+def delete_organization(
+    org_id: int,
+    confirm: str = Query(..., description="Must match the organization slug"),
+    db: Session = Depends(get_platform_db),
+    admin: User = Depends(require_platform_admin()),
+):
+    org = _get_org(db, org_id)
+    slug = org.slug
+    name = org.name
+    try:
+        result = destroy_tenant(db, org_id, confirm)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.expire_all()
+    log_platform_audit(
+        db,
+        admin.user_id,
+        "DELETE_ORGANIZATION",
+        entity_type="ORGANIZATION",
+        entity_id=org_id,
+        description=f"Hard-deleted organization '{name}' ({slug})",
+    )
+    db.commit()
+    return result
 
 
 @router.post("/organizations/{org_id}/grant-access")

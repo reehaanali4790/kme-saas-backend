@@ -151,7 +151,8 @@ class LCMaster(Base):
     creator = relationship("User", foreign_keys=[created_by])
     assignee = relationship("User", foreign_keys=[assigned_to])
     contract = relationship("Contract", back_populates="lc", foreign_keys=[contract_id])
-    
+    amendments = relationship("LCAmendment", back_populates="lc", cascade="all, delete-orphan")
+
     __table_args__ = (
         CheckConstraint("status IN ('OPEN', 'CLOSED', 'SHIPPED', 'EXPIRED', 'CANCELLED')", name='valid_status'),
         # Every report/dashboard filter combines a status check with a lc_date range —
@@ -178,6 +179,23 @@ class LCMaster(Base):
             delta = expiry - date.today()
             return delta.days
         return None
+
+
+class LCAmendment(Base):
+    """Before/after snapshot of LC header or product fields on each edit."""
+    __tablename__ = "lc_amendments"
+
+    amendment_id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    lc_id: Mapped[int] = mapped_column(Integer, ForeignKey("lc_master.lc_id", ondelete="CASCADE"), nullable=False, index=True)
+    field_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    old_value: Mapped[str | None] = mapped_column(Text)
+    new_value: Mapped[str | None] = mapped_column(Text)
+    changed_by: Mapped[int | None] = mapped_column(Integer, ForeignKey("platform.users.user_id"))
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+    lc = relationship("LCMaster", back_populates="amendments")
+    changer = relationship("User", foreign_keys=[changed_by])
+
 
 class LCProduct(Base):
     """LC product line items"""
@@ -994,6 +1012,7 @@ class Shipment(Base):
     financial_instruments = relationship("FinancialInstrument", back_populates="shipment", cascade="all, delete-orphan")
     insurance_certificates = relationship("InsuranceCertificate", back_populates="shipment", cascade="all, delete-orphan")
     validations = relationship("DocumentValidation", back_populates="shipment", cascade="all, delete-orphan")
+    container_events = relationship("ContainerEvent", back_populates="shipment", cascade="all, delete-orphan")
     extra_documents = relationship("ShipmentDocument", back_populates="shipment", cascade="all, delete-orphan")
     creator = relationship("User", foreign_keys=[created_by])
 
@@ -1205,6 +1224,37 @@ class DocumentValidation(Base):
 
     __table_args__ = (
         CheckConstraint("status IN ('PASS','FAIL','WARNING','SKIPPED')", name='valid_validation_status'),
+    )
+
+
+class ContainerEvent(Base):
+    """Per-container milestone (manual now; same shape for a later visibility API)."""
+    __tablename__ = "container_events"
+
+    event_id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    shipment_id: Mapped[int] = mapped_column(Integer, ForeignKey("shipments.shipment_id", ondelete="CASCADE"), nullable=False, index=True)
+    bl_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("bill_of_ladings.bl_id", ondelete="SET NULL"), nullable=True, index=True)
+    container_number: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    event_date: Mapped[date | None] = mapped_column(Date)
+    last_free_date: Mapped[date | None] = mapped_column(Date, index=True)
+    notes: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[str | None] = mapped_column(String(20), default="MANUAL")
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, server_default=func.now())
+    created_by: Mapped[int | None] = mapped_column(Integer, ForeignKey("platform.users.user_id"))
+
+    shipment = relationship("Shipment", back_populates="container_events")
+
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('LOADED','DISCHARGED','AVAILABLE','GATE_OUT','EMPTY_RETURN')",
+            name="valid_container_event_type",
+        ),
+        CheckConstraint(
+            "source IS NULL OR source IN ('MANUAL','API')",
+            name="valid_container_event_source",
+        ),
+        Index("idx_container_event_ship_cntr", "shipment_id", "container_number"),
     )
 
 

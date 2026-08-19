@@ -12,7 +12,9 @@ class MockRedis:
     def get(self, key):
         return self.store.get(key)
 
-    def set(self, key, value, ex=None):
+    def set(self, key, value, ex=None, nx=False):
+        if nx and key in self.store:
+            return False
         self.store[key] = value
         return True
 
@@ -47,7 +49,7 @@ def test_lookup_search_cache_hit_and_miss(db_session, mock_redis_cache):
     assert len(mock_redis_cache.store) == 1
 
     # Verify cache key was created
-    expected_key = "lme:lookup:supplier:TEST-Q"
+    expected_key = "lme:default:lookup:supplier:TEST-Q"
     assert expected_key in mock_redis_cache.store
 
     # 2. Second search: Cache Hit -> returns cached result
@@ -62,13 +64,13 @@ def test_lookup_search_cache_hit_and_miss(db_session, mock_redis_cache):
 
 def test_lookup_add_invalidates_cache(db_session, mock_redis_cache):
     # Pre-populate cache with lookup keys
-    mock_redis_cache.store["lme:lookup:supplier:abc"] = "{}"
-    mock_redis_cache.store["lme:lookup:supplier:def"] = "{}"
-    mock_redis_cache.store["lme:lookup:importer:xyz"] = "{}"
+    mock_redis_cache.store["lme:default:lookup:supplier:abc"] = "{}"
+    mock_redis_cache.store["lme:default:lookup:supplier:def"] = "{}"
+    mock_redis_cache.store["lme:default:lookup:importer:xyz"] = "{}"
 
     # Verify supplier keys are in the cache
-    assert "lme:lookup:supplier:abc" in mock_redis_cache.store
-    assert "lme:lookup:importer:xyz" in mock_redis_cache.store
+    assert "lme:default:lookup:supplier:abc" in mock_redis_cache.store
+    assert "lme:default:lookup:importer:xyz" in mock_redis_cache.store
 
     # Adding a new supplier must delete all 'lme:lookup:supplier:*' keys but leave 'importer' keys
     from modules.reports.lookup_schemas import LookupCreate
@@ -78,9 +80,9 @@ def test_lookup_add_invalidates_cache(db_session, mock_redis_cache):
     svc.add(db_session, "supplier", req, user_id=1)
 
     # Assert cache invalidation
-    assert "lme:lookup:supplier:abc" not in mock_redis_cache.store
-    assert "lme:lookup:supplier:def" not in mock_redis_cache.store
-    assert "lme:lookup:importer:xyz" in mock_redis_cache.store  # Importer cache must remain intact
+    assert "lme:default:lookup:supplier:abc" not in mock_redis_cache.store
+    assert "lme:default:lookup:supplier:def" not in mock_redis_cache.store
+    assert "lme:default:lookup:importer:xyz" in mock_redis_cache.store  # Importer cache must remain intact
 
 
 def test_redis_graceful_degradation_when_disabled(db_session, monkeypatch):
@@ -147,15 +149,15 @@ def test_dashboard_summary_cache_hit_and_miss(db_session, mock_redis_cache):
     from modules.reports import dashboard_service as dsvc
 
     # Ensure cache is empty
-    assert "lme:dashboard:summary" not in mock_redis_cache.store
+    assert "lme:default:dashboard:summary" not in mock_redis_cache.store
 
     # 1. First call: Cache Miss -> calculates and caches
     res1 = dsvc.summary(db_session)
-    assert "lme:dashboard:summary" in mock_redis_cache.store
+    assert "lme:default:dashboard:summary" in mock_redis_cache.store
 
     # 2. Second call: Cache Hit
     # Modify cached value manually
-    mock_redis_cache.store["lme:dashboard:summary"] = orjson.dumps({"fake": "summary"}).decode("utf-8")
+    mock_redis_cache.store["lme:default:dashboard:summary"] = orjson.dumps({"fake": "summary"}).decode("utf-8")
     res2 = dsvc.summary(db_session)
     assert res2 == {"fake": "summary"}
 
@@ -165,12 +167,12 @@ def test_dashboard_write_invalidation_on_mutation(db_session, mock_redis_cache):
     from modules.reports import dashboard_service as dsvc
 
     # Pre-populate dashboard cache
-    mock_redis_cache.store["lme:dashboard:summary"] = "{}"
-    mock_redis_cache.store["lme:dashboard:arrivals"] = "{}"
+    mock_redis_cache.store["lme:default:dashboard:summary"] = "{}"
+    mock_redis_cache.store["lme:default:dashboard:arrivals"] = "{}"
 
     # Verify keys exist in cache
-    assert "lme:dashboard:summary" in mock_redis_cache.store
-    assert "lme:dashboard:arrivals" in mock_redis_cache.store
+    assert "lme:default:dashboard:summary" in mock_redis_cache.store
+    assert "lme:default:dashboard:arrivals" in mock_redis_cache.store
 
     from datetime import date
     # Perform database insert on LCMaster (triggering lifecycle listener)
@@ -184,7 +186,7 @@ def test_dashboard_write_invalidation_on_mutation(db_session, mock_redis_cache):
     db_session.commit()
 
     # Verify keys were deleted from cache!
-    assert "lme:dashboard:summary" not in mock_redis_cache.store
-    assert "lme:dashboard:arrivals" not in mock_redis_cache.store
+    assert "lme:default:dashboard:summary" not in mock_redis_cache.store
+    assert "lme:default:dashboard:arrivals" not in mock_redis_cache.store
 
 

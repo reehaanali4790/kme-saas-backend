@@ -21,6 +21,7 @@ from models.database_models import (
     Contract,
 )
 from modules.shipments.services import recompute_shipment_status
+from modules.shipments.shipment_metrics import resolve_container_numbers
 from modules.shipments.docs_reception import docs_reception_summary
 from modules.workflow.import_paths import is_lc_backed, normalize_import_mode
 
@@ -35,6 +36,8 @@ def _norm_hs(code):
 logger = logging.getLogger("uvicorn")
 
 WEIGHT_TOLERANCE_MT = Decimal("0.5")   # acceptable +/- between documents
+AMOUNT_TOLERANCE_USD = Decimal("1")
+_ISO_CONTAINER = re.compile(r"\b[A-Z]{4}\d{7}\b", re.I)
 
 
 def _f(v):
@@ -73,6 +76,27 @@ def _weights_match(values):
     if len(present) < 2:
         return None  # not enough to compare
     return (max(present) - min(present)) <= WEIGHT_TOLERANCE_MT
+
+
+def _container_count(shipment, bl) -> int | None:
+    text, _src = resolve_container_numbers(shipment)
+    blob = " ".join(x for x in (text, getattr(bl, "shipping_marks", None) if bl else None) if x)
+    found = _ISO_CONTAINER.findall(blob or "")
+    if found:
+        return len({c.upper() for c in found})
+    if bl and bl.package_type and "CONT" in str(bl.package_type).upper() and bl.package_count:
+        return int(bl.package_count)
+    return None
+
+
+def _group_status(pairs, kind="generic"):
+    """pairs: list of (label, value). Returns (comparable: bool, matched: bool|None)."""
+    present = [(lab, val) for lab, val in pairs if val]
+    if len(present) < 2:
+        return False, None
+    base = present[0][1]
+    matched = all(_lenient_match(base, val, kind=kind) for _, val in present[1:])
+    return True, bool(matched)
 
 
 def _lenient_match(a, b, kind: str = "generic"):
@@ -361,6 +385,153 @@ def validate_shipment(shipment_id: int, db: Session) -> dict:
         c.status, c.message = "WARNING", f"GD B/L number '{gd_bl}' differs from BL '{bl_num}'."
     checks.append(c)
 
+    prod = lc.products[0] if (lc and lc.products) else None
+
+    # ---- 10. Vessel name (BL / invoice / shipment / LC) ----
+    c = _Check("Vessel Name Match", "DESCRIPTION")
+    c.bl = bl.vessel_name if bl else None
+    c.inv = inv.vessel_name if inv else None
+    c.lc = lc.vessel_name if lc else (s.vessel_name if s else None)
+    comparable, matched = _group_status([
+        ("BL", c.bl), ("Invoice", c.inv), ("Shipment", s.vessel_name), ("LC", lc.vessel_name if lc else None),
+    ], kind="vessel")
+    if not comparable:
+        c.status, c.message = "SKIPPED", "Not enough vessel names to compare."
+    elif matched:
+        c.status, c.message = "PASS", "Vessel name is consistent across documents."
+    else:
+        c.status, c.message = "FAIL", (
+            f"Vessel names differ — BL:{_fmt(c.bl)} Invoice:{_fmt(c.inv)} "
+            f"Shipment:{_fmt(s.vessel_name)} LC:{_fmt(lc.vessel_name if lc else None)}."
+        )
+    checks.append(c)
+
+    # ---- 11. Port of discharge ----
+    c = _Check("Port of Discharge Match", "DESCRIPTION")
+    c.bl = bl.port_of_discharge if bl else None
+    c.inv = inv.port_of_discharge if inv else None
+    c.lc = lc.arrival_port if lc else (s.port_of_discharge if s else None)
+    comparable, matched = _group_status([
+        ("BL", c.bl), ("Invoice", c.inv), ("Shipment", s.port_of_discharge),
+        ("LC", lc.arrival_port if lc else None),
+    ], kind="location")
+    if not comparable:
+        c.status, c.message = "SKIPPED", "Not enough ports of discharge to compare."
+    elif matched:
+        c.status, c.message = "PASS", "Port of discharge is consistent across documents."
+    else:
+        c.status, c.message = "FAIL", (
+            f"Ports differ — BL:{_fmt(c.bl)} Invoice:{_fmt(c.inv)} "
+            f"Shipment:{_fmt(s.port_of_discharge)} LC:{_fmt(c.lc)}."
+        )
+    checks.append(c)
+
+    # ---- 12. Consignee vs LC applicant ----
+    c = _Check("Consignee vs LC Applicant", "DESCRIPTION")
+    c.bl = bl.consignee if bl else None
+    c.lc = lc.importer_name if lc else None
+    if not lc_backed:
+        c.status, c.message = "SKIPPED", "Non-LC import — consignee/applicant check not applicable."
+    elif not c.bl or not c.lc:
+        c.status, c.message = "SKIPPED", "BL consignee or LC applicant missing."
+    elif _lenient_match(c.bl, c.lc, kind="company"):
+        c.status, c.message = "PASS", "BL consignee matches the LC applicant."
+    else:
+        c.status, c.message = "FAIL", f"BL consignee '{c.bl}' differs from LC applicant '{c.lc}'."
+    checks.append(c)
+
+    # ---- 13. Quantity MT vs LC product quantity ----
+    c = _Check("Quantity vs LC", "VARIANCE")
+    c.inv = _fmt(_f(inv.total_net_weight_mt) if inv else None)
+    c.pkg = _fmt(_f(pkg.total_net_weight_mt) if pkg else None)
+    c.lc = _fmt(_f(prod.quantity) if prod else None)
+    qty_docs = [v for v in (_f(inv.total_net_weight_mt) if inv else None,
+                            _f(pkg.total_net_weight_mt) if pkg else None) if v is not None]
+    lc_qty = _f(prod.quantity) if prod else None
+    if not lc_backed:
+        c.status, c.message = "SKIPPED", "Non-LC import — LC quantity check not applicable."
+    elif lc_qty is None or not qty_docs:
+        c.status, c.message = "SKIPPED", "LC quantity or document weight missing."
+    elif all(abs(q - lc_qty) <= WEIGHT_TOLERANCE_MT for q in qty_docs):
+        c.status, c.message = "PASS", f"Document weights match LC quantity {_fmt(lc_qty)} MT."
+    else:
+        c.status, c.message = "FAIL", (
+            f"Quantity MT differs from LC {_fmt(lc_qty)} — Invoice:{c.inv} Packing:{c.pkg}."
+        )
+    checks.append(c)
+
+    # ---- 14. Invoice value vs LC amount ----
+    c = _Check("Invoice Value vs LC Amount", "PRICE")
+    inv_amt = _f(inv.total_amount_usd) if inv else None
+    lc_amt = _f(prod.lc_amount) if prod else None
+    c.inv = _fmt(inv_amt)
+    c.lc = _fmt(lc_amt)
+    if not lc_backed:
+        c.status, c.message = "SKIPPED", "Non-LC import — invoice vs LC amount not applicable."
+    elif inv_amt is None or lc_amt is None:
+        c.status, c.message = "SKIPPED", "Invoice amount or LC amount missing."
+    elif abs(inv_amt - lc_amt) <= AMOUNT_TOLERANCE_USD:
+        c.status, c.message = "PASS", "Invoice value matches the LC amount."
+    elif inv_amt > lc_amt:
+        c.status, c.message = "FAIL", (
+            f"Invoice {_fmt(inv_amt)} exceeds LC amount {_fmt(lc_amt)}."
+        )
+    else:
+        c.status, c.message = "WARNING", (
+            f"Invoice {_fmt(inv_amt)} is below LC amount {_fmt(lc_amt)}."
+        )
+    checks.append(c)
+
+    # ---- 15. Container count vs LC ----
+    c = _Check("Container Count vs LC", "COUNT")
+    found = _container_count(s, bl)
+    expected = prod.num_containers if prod else None
+    c.bl = str(found) if found is not None else None
+    c.lc = str(expected) if expected else None
+    if not lc_backed:
+        c.status, c.message = "SKIPPED", "Non-LC import — container count check not applicable."
+    elif not expected:
+        c.status, c.message = "SKIPPED", "LC has no container count to compare."
+    elif found is None:
+        c.status, c.message = "SKIPPED", "No container numbers found on the BL/shipment."
+    elif found == int(expected):
+        c.status, c.message = "PASS", f"Container count {found} matches the LC."
+    else:
+        c.status, c.message = "FAIL", f"Container count {found} differs from LC {expected}."
+    checks.append(c)
+
+    # ---- 16. Country of origin ----
+    c = _Check("Country of Origin Match", "DESCRIPTION")
+    c.inv = inv.country_of_origin if inv else None
+    c.lc = prod.origin if prod else None
+    if not lc_backed:
+        c.status, c.message = "SKIPPED", "Non-LC import — origin check not applicable."
+    elif not c.inv or not c.lc:
+        c.status, c.message = "SKIPPED", "Invoice origin or LC origin missing."
+    elif _lenient_match(c.inv, c.lc, kind="location"):
+        c.status, c.message = "PASS", "Country of origin matches the LC."
+    else:
+        c.status, c.message = "FAIL", f"Invoice origin '{c.inv}' differs from LC origin '{c.lc}'."
+    checks.append(c)
+
+    # ---- 17. Core shipping documents present ----
+    c = _Check("Core Documents Present", "DESCRIPTION")
+    missing = []
+    if not bl:
+        missing.append("Bill of Lading")
+    if not inv:
+        missing.append("Commercial Invoice")
+    if not pkg:
+        missing.append("Packing List")
+    c.bl = "present" if bl else "missing"
+    c.inv = "present" if inv else "missing"
+    c.pkg = "present" if pkg else "missing"
+    if not missing:
+        c.status, c.message = "PASS", "BL, invoice, and packing list are on the shipment."
+    else:
+        c.status, c.message = "WARNING", f"Missing core document(s): {', '.join(missing)}."
+    checks.append(c)
+
     # ---- persist ----
     db.query(DocumentValidation).filter(DocumentValidation.shipment_id == shipment_id).delete()
     for c in checks:
@@ -402,4 +573,63 @@ def validate_shipment(shipment_id: int, db: Session) -> dict:
         "checks": [{"check_name": c.name, "check_type": c.ctype, "status": c.status,
                     "message": c.message, "bl_value": _fmt(c.bl), "invoice_value": _fmt(c.inv),
                     "packing_value": _fmt(c.pkg), "lc_value": _fmt(c.lc)} for c in checks],
+    }
+
+
+def _pack_from_rows(s: Shipment, rows) -> dict:
+    summary = {"PASS": 0, "FAIL": 0, "WARNING": 0, "SKIPPED": 0}
+    checks = []
+    for v in rows:
+        st = v.status or "SKIPPED"
+        if st in summary:
+            summary[st] += 1
+        checks.append({
+            "check_name": v.check_name, "check_type": v.check_type, "status": st,
+            "message": v.message,
+            "bl_value": v.bl_value, "invoice_value": v.invoice_value,
+            "packing_value": v.packing_value, "lc_value": v.lc_value,
+        })
+    return {
+        "shipment_id": s.shipment_id,
+        "shipment_ref": s.shipment_ref,
+        "lc_id": s.lc_id,
+        "validation_status": s.validation_status,
+        "summary": summary,
+        "checks": checks,
+    }
+
+
+def discrepancy_pack(shipment_id: int, db: Session) -> dict:
+    s = db.query(Shipment).filter(Shipment.shipment_id == shipment_id, Shipment.is_deleted.is_(False)).first()
+    if not s:
+        raise ValueError("Shipment not found")
+    rows = (db.query(DocumentValidation)
+              .filter(DocumentValidation.shipment_id == shipment_id)
+              .order_by(DocumentValidation.validation_id).all())
+    return _pack_from_rows(s, rows)
+
+
+def discrepancy_pack_for_lc(lc_id: int, db: Session) -> dict:
+    lc = db.query(LCMaster).filter(LCMaster.lc_id == lc_id).first()
+    if not lc:
+        raise ValueError("LC not found")
+    shipments = (db.query(Shipment)
+                   .filter(Shipment.lc_id == lc_id, Shipment.is_deleted.is_(False))
+                   .order_by(Shipment.created_at.asc()).all())
+    packs = []
+    fail_total = warn_total = 0
+    for s in shipments:
+        rows = (db.query(DocumentValidation)
+                  .filter(DocumentValidation.shipment_id == s.shipment_id)
+                  .order_by(DocumentValidation.validation_id).all())
+        pack = _pack_from_rows(s, rows)
+        packs.append(pack)
+        fail_total += pack["summary"]["FAIL"]
+        warn_total += pack["summary"]["WARNING"]
+    return {
+        "lc_id": lc_id,
+        "lc_number": lc.lc_number,
+        "fail_count": fail_total,
+        "warning_count": warn_total,
+        "shipments": packs,
     }

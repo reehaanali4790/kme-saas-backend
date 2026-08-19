@@ -128,6 +128,8 @@ class AuthService:
         role_name: str = "VIEWER",
         is_default: bool = False,
         invited_by: Optional[int] = None,
+        invite_token: Optional[str] = None,
+        invite_expires_at: Optional[datetime] = None,
     ) -> OrganizationMembership:
         existing = db.query(OrganizationMembership).filter(
             OrganizationMembership.user_id == user_id,
@@ -142,6 +144,8 @@ class AuthService:
             role_name=role_name,
             is_default=is_default,
             invited_by=invited_by,
+            invite_token=invite_token,
+            invite_expires_at=invite_expires_at,
         )
         db.add(membership)
         db.commit()

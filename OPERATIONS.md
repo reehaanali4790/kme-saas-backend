@@ -89,4 +89,8 @@ See [docs/CLIENT_ONBOARDING.md](docs/CLIENT_ONBOARDING.md) and [docs/UAT_CHECKLI
 
 ## Scheduler note
 
-Run background jobs on **one replica only**: set `ENABLE_SCHEDULER=true` on a single backend instance, `false` on others.
+Background jobs (NBP, LME, KPT, alerts) run in-process.
+
+- With Redis (`REDIS_URL` set), replicas elect a single leader via `lme:scheduler:leader` (TTL 120s). Extra web replicas can keep `ENABLE_SCHEDULER=true`.
+- Without Redis, set `ENABLE_SCHEDULER=true` on **one** instance only and `false` on the others.
+- `ENABLE_SCHEDULER=false` always skips jobs on that process.

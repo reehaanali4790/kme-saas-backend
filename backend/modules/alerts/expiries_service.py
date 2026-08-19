@@ -230,7 +230,7 @@ def list_expiries(db: Session, doc_type: Optional[str], tone: Optional[str],
                         vessel_name=s.vessel_name if s else None,
                         entity_id=gd.gd_id,
                         href=f"/shipment?id={gd.shipment_id}" if gd.shipment_id else f"/gd-detail?id={gd.gd_id}",
-                        note=f"ETA + {GD_FILING_DAYS} days to file GD",
+                        note=f"Arrival + {fd.get('filing_days') or GD_FILING_DAYS} days to file GD",
                         today=today,
                     ))
             if not type_filter or "INTO_BOND" in type_filter:

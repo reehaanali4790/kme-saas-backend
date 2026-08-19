@@ -11,6 +11,7 @@ import os
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from config.settings import settings
+from core.tenant_upload import get_current_tenant_schema
 
 _EXT_MEDIA = {
     ".pdf": "application/pdf",
@@ -31,11 +32,32 @@ def media_type_for(filename: str | None, path: str | None = None) -> str:
     return _EXT_MEDIA.get(ext, "application/octet-stream")
 
 
+def _allowed_roots() -> list[str]:
+    schema = get_current_tenant_schema()
+    roots = []
+    if schema:
+        roots.append(os.path.abspath(os.path.join(settings.UPLOAD_DIR, schema)))
+    else:
+        roots.append(os.path.abspath(settings.UPLOAD_DIR))
+    return roots
+
+
+def _is_under_allowed_root(path: str) -> bool:
+    abs_path = os.path.abspath(path)
+    for root in _allowed_roots():
+        try:
+            if os.path.commonpath([abs_path, root]) == root:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def resolve_document_path(path: str | None) -> str | None:
-    """Find document file across standard upload directories even if working dir or volume path moved."""
+    """Resolve a stored path inside the current tenant's upload directory only."""
     if not path:
         return None
-    if os.path.exists(path):
+    if os.path.exists(path) and _is_under_allowed_root(path):
         return path
 
     filename = os.path.basename(path)
@@ -47,26 +69,22 @@ def resolve_document_path(path: str | None) -> str | None:
         "bl_documents",
         "packing_documents",
         "gd_documents",
+        "gd_attachments",
         "fi_documents",
         "insurance_documents",
+        "lc_documents",
+        "contract_documents",
+        "shipment_documents",
         "branding",
         "pdfs",
         "excel",
         "",
     ]
 
-    base_dirs = [
-        settings.UPLOAD_DIR,
-        "/data/uploads",
-        "/data",
-        "./uploads",
-        "uploads",
-    ]
-
-    for b in base_dirs:
+    for root in _allowed_roots():
         for sub in subfolders:
-            candidate = os.path.join(b, sub, filename) if sub else os.path.join(b, filename)
-            if os.path.exists(candidate):
+            candidate = os.path.join(root, sub, filename) if sub else os.path.join(root, filename)
+            if os.path.exists(candidate) and _is_under_allowed_root(candidate):
                 return candidate
 
     return None

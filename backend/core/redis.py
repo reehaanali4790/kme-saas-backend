@@ -51,12 +51,12 @@ class RedisClient:
             logger.warning(f"⚠️ Redis GET error for key '{key}': {e}. Falling back to database.")
             return None
 
-    def set(self, key: str, value: str, ex: Optional[int] = None) -> bool:
+    def set(self, key: str, value: str, ex: Optional[int] = None, nx: bool = False) -> bool:
         if not self.enabled or not self.client:
             return False
         try:
-            self.client.set(key, value, ex=ex)
-            return True
+            result = self.client.set(key, value, ex=ex, nx=nx)
+            return bool(result)
         except Exception as e:
             logger.warning(f"⚠️ Redis SET error for key '{key}': {e}.")
             return False

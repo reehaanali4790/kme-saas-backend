@@ -243,3 +243,15 @@ def test_validation_error_returns_clean_string_detail(authenticated_client):
     })
     assert resp.status_code == 422
     assert isinstance(resp.json()["detail"], str)
+
+
+def test_gd_filing_days_switches_on_sro_1346():
+    from datetime import date
+    from modules.weboc.helpers.weboc_service import gd_filing_days, section82_penalty_estimate_pkr
+    assert gd_filing_days(date(2026, 9, 30)) == 18
+    assert gd_filing_days(date(2026, 10, 1)) == 20
+    assert section82_penalty_estimate_pkr(1, date(2026, 9, 30)) is None
+    assert section82_penalty_estimate_pkr(1, date(2026, 10, 1)) == 25_000
+    assert section82_penalty_estimate_pkr(5, date(2026, 10, 1)) == 125_000
+    assert section82_penalty_estimate_pkr(6, date(2026, 10, 1)) == 175_000
+    assert section82_penalty_estimate_pkr(100, date(2026, 10, 1)) == 1_000_000

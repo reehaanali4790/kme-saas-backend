@@ -52,3 +52,17 @@ class RefreshRequest(BaseModel):
 
 class SelectOrgRequest(BaseModel):
     org_id: int
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+
+class AcceptInviteRequest(BaseModel):
+    token: str
+    password: str

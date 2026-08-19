@@ -20,12 +20,17 @@ from core.tenant import get_tenant_db
 from models.database_models import User
 from modules.auth.dependencies import get_current_user
 from core.permissions import require_min_role
+from core.plan_limits import require_plan_feature
 from modules.weboc import sro_service as svc
 from modules.weboc.sro_schemas import ApprovalSave, SroQuotaItemSave
 
 logger = logging.getLogger("uvicorn")
 
-router = APIRouter(prefix="/api/sro", tags=["SRO / EDB Quota"])
+router = APIRouter(
+    prefix="/api/sro",
+    tags=["SRO / EDB Quota"],
+    dependencies=[Depends(require_plan_feature("sro_quota"))],
+)
 
 # Mutations require OPERATOR+ - VIEWER can read approvals/reports but not create/edit them.
 _can_write = require_min_role("ADMIN", "MANAGER", "OPERATOR")

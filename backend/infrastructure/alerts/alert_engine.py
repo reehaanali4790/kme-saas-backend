@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from models.database_models import (
     LCMaster, LCProduct, Shipment, GoodsDeclaration, SystemAlert,
-    BillOfLading, DemurrageConfig, FinancialInstrument, EdbApproval,
+    BillOfLading, ContainerEvent, DemurrageConfig, FinancialInstrument, EdbApproval,
 )
 from config.settings import settings
 from modules.weboc.helpers.bond_alerts import scan_bond_alerts
@@ -359,7 +359,7 @@ def scan(db: Session) -> dict:
                  entity_type="SHIPMENT", entity_id=s.shipment_id,
                  lc_id=lc.lc_id, shipment_id=s.shipment_id)
 
-    # ---- 13. WeBOC GD: filing deadline (ETA + 18 days, remind from 10 days out),
+    # ---- 13. WeBOC GD: filing deadline (ETA + 18/20 days per FBR SRO 1346 from Oct 2026),
     #          late filing (Section 82 penalty), and the into-bond 180-day clock ----
     weboc_gds = db.query(GoodsDeclaration).filter(
         (GoodsDeclaration.eta.isnot(None)) | (GoodsDeclaration.late_filed.is_(True))
@@ -371,8 +371,14 @@ def scan(db: Session) -> dict:
         # Late filed — Section 82 penalty found on the GD View.
         if fd["late_filed"]:
             pen = float(gd.section82_penalty_pkr or 0)
-            pen_txt = (f" Section 82 penalty found: PKR {pen:,.0f}." if pen > 0
-                       else " Section 82 penalty found.")
+            est = fd.get("penalty_estimate_pkr")
+            if pen > 0:
+                pen_txt = f" Section 82 penalty found: PKR {pen:,.0f}."
+            elif est:
+                pen_txt = (f" Documented Section 82 amount is not yet recorded; "
+                           f"FBR SRO 1346 estimate is PKR {est:,.0f} (cap Rs 1,000,000).")
+            else:
+                pen_txt = " Section 82 penalty found."
             _add(db, created, existing,
                  key=f"GD_LATE_FILED:{gd.gd_id}",
                  atype="GD_LATE_FILED", severity="HIGH",
@@ -386,25 +392,32 @@ def scan(db: Session) -> dict:
         elif fd["state"] == "DUE_SOON":
             days = fd["days_remaining"]
             sev = "HIGH" if days <= 3 else "MEDIUM"
+            filing_days = fd.get("filing_days") or GD_FILING_DAYS
             _add(db, created, existing,
                  key=f"GD_FILING_DUE:{gd.gd_id}:{fd['deadline']}",
                  atype="GD_FILING_DUE", severity=sev,
                  title=f"GD filing deadline in {days} day(s) — {ref}",
                  message=f"GD filing deadline is approaching. GD should be filed within "
-                         f"{GD_FILING_DAYS} days of ETA ({fd['eta']}) — the deadline is "
-                         f"{fd['deadline']} ({days} day(s) away). Upload the GD View once filed.",
+                         f"{filing_days} days of arrival ({fd['eta']}) — the deadline is "
+                         f"{fd['deadline']} ({days} day(s) away). "
+                         f"From 1 Oct 2026 FBR SRO 1346 uses 20 days then escalating PKR fines. "
+                         f"Upload the GD View once filed.",
                  entity_type="GD", entity_id=gd.gd_id,
                  lc_id=gd.lc_id, shipment_id=gd.shipment_id)
         elif fd["state"] == "OVERDUE":
             late_by = abs(fd["days_remaining"])
+            filing_days = fd.get("filing_days") or GD_FILING_DAYS
+            est = fd.get("penalty_estimate_pkr")
+            est_txt = (f" Estimated SRO 1346 penalty: PKR {est:,.0f} (Rs 25,000/day for 5 days, "
+                       f"then Rs 50,000/day, cap Rs 1,000,000)." if est else
+                       " A late filing attracts a Section 82 penalty.")
             _add(db, created, existing,
                  key=f"GD_FILING_OVERDUE:{gd.gd_id}:{fd['deadline']}",
                  atype="GD_FILING_OVERDUE", severity="HIGH",
                  title=f"GD filing deadline PASSED — {ref}",
-                 message=f"The GD filing deadline ({fd['deadline']} = ETA {fd['eta']} + "
-                         f"{GD_FILING_DAYS} days) passed {late_by} day(s) ago and no GD View "
-                         f"has been uploaded. File the GD — a late filing attracts a "
-                         f"Section 82 penalty.",
+                 message=f"The GD filing deadline ({fd['deadline']} = arrival {fd['eta']} + "
+                         f"{filing_days} days) passed {late_by} day(s) ago and no GD View "
+                         f"has been uploaded. File the GD.{est_txt}",
                  entity_type="GD", entity_id=gd.gd_id,
                  lc_id=gd.lc_id, shipment_id=gd.shipment_id)
 
@@ -442,6 +455,24 @@ def scan(db: Session) -> dict:
                          f"(over by {used-approved:,.3f} MT). Raise the approved quantity or "
                          f"stop drawing on this SRO.",
                  entity_type="SRO", entity_id=a.approval_id)
+        elif approved and approved > 0:
+            ratio = used / approved
+            if ratio >= 0.9:
+                _add(db, created, existing,
+                     key=f"SRO_QUOTA_90:{a.approval_id}",
+                     atype="SRO_QUOTA_90", severity="HIGH",
+                     title=f"SRO quota at 90% — {name} ({who})",
+                     message=f"Used {used:,.3f} MT of {approved:,.3f} MT approved "
+                             f"({ratio*100:.1f}%). Remaining quota is thin — plan remaining GDs.",
+                     entity_type="SRO", entity_id=a.approval_id)
+            elif ratio >= 0.8:
+                _add(db, created, existing,
+                     key=f"SRO_QUOTA_80:{a.approval_id}",
+                     atype="SRO_QUOTA_80", severity="MEDIUM",
+                     title=f"SRO quota at 80% — {name} ({who})",
+                     message=f"Used {used:,.3f} MT of {approved:,.3f} MT approved "
+                             f"({ratio*100:.1f}%). Watch remaining quota on the SRO report.",
+                     entity_type="SRO", entity_id=a.approval_id)
         if a.end_date and a.end_date < today and (approved is None or used < (approved or 0)):
             _add(db, created, existing,
                  key=f"SRO_QUOTA_EXPIRED:{a.approval_id}:{a.end_date}",
@@ -487,6 +518,29 @@ def scan(db: Session) -> dict:
                  message=f"All {ordered:.3f} MT ordered under LC {lc.lc_number} have been delivered "
                          f"({delivered:.3f} MT). Ready for close-out.",
                  entity_type="LC", entity_id=lc.lc_id, lc_id=lc.lc_id)
+
+    # ---- 15b. Per-container last free day (manual milestones) ----
+    lfd_events = (db.query(ContainerEvent)
+                    .filter(ContainerEvent.last_free_date.isnot(None))
+                    .all())
+    for ev in lfd_events:
+        days = (ev.last_free_date - today).days
+        if days > 3:
+            continue
+        ref = ev.container_number
+        sev = "HIGH" if days <= 0 else "MEDIUM"
+        atype = "CONTAINER_LFD"
+        title = (f"Container last free day PASSED — {ref}" if days < 0
+                 else f"Container last free day in {days} day(s) — {ref}")
+        _add(db, created, existing,
+             key=f"CONTAINER_LFD:{ev.event_id}:{ev.last_free_date}",
+             atype=atype, severity=sev,
+             title=title,
+             message=f"Last free day for container {ref} is {ev.last_free_date} "
+                     f"({ev.event_type.replace('_', ' ').title()}). "
+                     f"Gate-out before demurrage/detention accrues.",
+             entity_type="SHIPMENT", entity_id=ev.shipment_id,
+             shipment_id=ev.shipment_id)
 
     # ---- 16. Into-bond 180-day clock: day-160 reminder, deadline passed, penalty due.
     #          Recurring (daily re-alert after acknowledge) and self-resolving, so it

@@ -7,7 +7,7 @@ from typing import Optional
 from sqlalchemy.orm import Session, joinedload
 
 from models.database_models import (
-    BillOfLading, GDAttachment, GoodsDeclaration, LCMaster, Shipment,
+    BillOfLading, ContainerEvent, GDAttachment, GoodsDeclaration, LCMaster, Shipment,
 )
 from modules.shipments import services as ship_svc
 from modules.shipments.demurrage_service import compute_demurrage
@@ -21,7 +21,8 @@ from modules.workflow.import_paths import (
     normalize_import_mode,
 )
 from modules.weboc.gd_service import _has_attachment
-from modules.weboc.helpers.weboc_service import filing_deadline, bond_summary, GD_FILING_DAYS
+from modules.shipments import container_events_service as cntr_svc
+from modules.weboc.helpers.weboc_service import filing_deadline, bond_summary
 
 
 def _tone_from_days(days: Optional[int], *, warn_lead: int = 10) -> str:
@@ -300,6 +301,7 @@ def build_journey(shipment_id: int, db: Session) -> dict:
         "steps": steps,
         "clearance_type": gd_type or None,
         "validation_blocked": val_blocked,
+        "containers": cntr_svc.list_container_state(shipment_id, db),
     }
 
 
@@ -342,9 +344,10 @@ def build_timeline(shipment_id: int, db: Session) -> dict:
     if gd:
         fd = filing_deadline(gd, today)
         if fd.get("deadline") and not fd.get("filed"):
-            add_marker("gd_filing", f"GD Filing (ETA+{GD_FILING_DAYS})", date.fromisoformat(fd["deadline"][:10]),
+            days = fd.get("filing_days") or 20
+            add_marker("gd_filing", f"GD Filing (ETA+{days})", date.fromisoformat(fd["deadline"][:10]),
                        warn_lead=10, href=f"/shipment?id={shipment_id}&tab=customs",
-                       note=f"File GD within {GD_FILING_DAYS} days of ETA")
+                       note=f"File GD within {days} days of arrival (FBR SRO 1346 from 1 Oct 2026 uses 20 days)")
         bond = bond_summary(gd, db, today)
         if bond.get("applies") and bond.get("deadline") and not bond.get("is_weight_settled"):
             add_marker("into_bond", "Into-Bond 180-Day", date.fromisoformat(str(bond["deadline"])[:10]),
@@ -366,6 +369,13 @@ def build_timeline(shipment_id: int, db: Session) -> dict:
             add_marker(f"demurrage_{bl.bl_id}", f"Demurrage LFD ({bl.bl_number or 'BL'})",
                        lfd_date, warn_lead=3, href="/demurrage-report",
                        note="Last free day before demurrage accrues")
+
+    for ev in db.query(ContainerEvent).filter(ContainerEvent.shipment_id == shipment_id).all():
+        if ev.last_free_date:
+            add_marker(f"cntr_lfd_{ev.event_id}", f"Container LFD ({ev.container_number})",
+                       ev.last_free_date, warn_lead=3,
+                       href=f"/shipment?id={shipment_id}&tab=workflow",
+                       note=f"{ev.event_type.replace('_', ' ').title()} — last free day")
 
     markers.sort(key=lambda m: m["date"])
     return {"shipment_id": shipment_id, "today": today.isoformat(), "markers": markers}

@@ -3,6 +3,7 @@ Authentication API — multi-tenant JWT with organization context.
 """
 
 import ipaddress
+import logging
 import secrets
 from datetime import datetime
 from typing import Optional
@@ -31,10 +32,16 @@ from modules.auth.schemas import (
     SelectOrgRequest,
     Token,
     UserResponse,
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
+    AcceptInviteRequest,
 )
 from modules.auth.services import AuthService
 from infrastructure.audit.audit_service import log_platform_audit
+from infrastructure.email.mailer import send_email
+from core.redis import redis_cache
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
@@ -540,3 +547,89 @@ def refresh_token(
     )
     db.commit()
     return {"access_token": new_access_token, "token_type": "bearer"}
+
+
+def _password_reset_key(token: str) -> str:
+    return f"lme:pwreset:{token}"
+
+
+@router.post("/forgot-password")
+@limiter.limit(settings.FORGOT_PASSWORD_RATE_LIMIT)
+def forgot_password(
+    request: Request,
+    body: ForgotPasswordRequest,
+    db: Session = Depends(get_platform_db),
+):
+    """Always 200 — do not reveal whether the email exists."""
+    email = (body.email or "").strip().lower()
+    user = AuthService.get_user_by_email(db, email) if email else None
+    if user and user.active:
+        token = secrets.token_urlsafe(32)
+        stored = redis_cache.set(_password_reset_key(token), str(user.user_id), ex=3600)
+        if stored:
+            send_email(
+                user.email,
+                "Reset your password",
+                f"Reset your password using this link (expires in 1 hour):\n{settings.APP_PUBLIC_URL}/reset-password?token={token}",
+            )
+        else:
+            logger.warning("Could not store password-reset token for user %s (Redis unavailable)", user.user_id)
+    return {"ok": True}
+
+
+@router.post("/reset-password")
+@limiter.limit(settings.FORGOT_PASSWORD_RATE_LIMIT)
+def reset_password_with_token(
+    request: Request,
+    body: ResetPasswordRequest,
+    db: Session = Depends(get_platform_db),
+):
+    new_password = (body.new_password or "").strip()
+    if len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    token = (body.token or "").strip()
+    user_id_raw = redis_cache.get(_password_reset_key(token)) if token else None
+    if not user_id_raw:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+    user = AuthService.get_user_by_id(db, int(user_id_raw))
+    if not user or not user.active:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+    user.password_hash = AuthService.hash_password(new_password)
+    user.updated_at = datetime.utcnow()
+    db.query(UserSession).filter(UserSession.user_id == user.user_id, UserSession.active.is_(True)).update(
+        {"active": False, "logout_time": datetime.utcnow()}
+    )
+    redis_cache.delete(_password_reset_key(token))
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/accept-invite")
+@limiter.limit(settings.FORGOT_PASSWORD_RATE_LIMIT)
+def accept_invite(
+    request: Request,
+    body: AcceptInviteRequest,
+    db: Session = Depends(get_platform_db),
+):
+    password = (body.password or "").strip()
+    if len(password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    token = (body.token or "").strip()
+    membership = db.query(OrganizationMembership).filter(
+        OrganizationMembership.invite_token == token
+    ).first() if token else None
+    if not membership:
+        raise HTTPException(status_code=400, detail="Invalid or expired invite")
+    if membership.invite_expires_at and membership.invite_expires_at < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Invite has expired")
+    user = db.query(User).filter(User.user_id == membership.user_id).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired invite")
+    user.password_hash = AuthService.hash_password(password)
+    user.active = True
+    user.email_verified = True
+    user.updated_at = datetime.utcnow()
+    membership.invite_token = None
+    membership.invite_expires_at = None
+    db.commit()
+    return {"ok": True, "email": user.email}

@@ -44,7 +44,9 @@ def v2_summary(db: Session = Depends(get_tenant_db), current_user: User = Depend
     import orjson
     from core.redis import redis_cache
 
-    cache_key = "lme:dashboard:v2:summary"
+    from core.cache_keys import dashboard_key
+
+    cache_key = dashboard_key("v2:summary")
     cached = redis_cache.get(cache_key)
     if cached:
         try:

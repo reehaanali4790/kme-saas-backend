@@ -16,7 +16,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.tenant import get_tenant_db
-from models.database_models import User, LCMaster, LCProduct, BillOfLading
+from models.database_models import User, LCMaster, LCProduct, BillOfLading, LCAmendment
 from modules.auth.dependencies import get_current_user
 from modules.auth.services import AuthService
 from infrastructure.formula_engine.formula_engine import FormulaEngine
@@ -387,6 +387,18 @@ _LC_DATE_FIELDS = ["contract_date", "lc_date", "expiry_date", "last_ship_date"]
 # Product line fields
 _PROD_STR_FIELDS = ["product_code", "product_name", "origin", "quality", "hs_code", "grade", "size"]
 _PROD_DEC_FIELDS = ["quantity", "lc_unit_price", "lc_amount"]
+_AMEND_LC_FIELDS = ("expiry_date", "last_ship_date", "supplier_name")
+_AMEND_PROD_FIELDS = ("lc_amount", "quantity")
+
+
+def _amend_snap(v) -> str | None:
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v.date().isoformat()
+    if isinstance(v, date):
+        return v.isoformat()
+    return str(v)
 
 
 @router.get("/{lc_id}/completeness")
@@ -397,6 +409,34 @@ def lc_completeness(
 ):
     """Progress % for LC journey across all shipments."""
     return journey_svc.lc_completeness(lc_id, db)
+
+
+@router.get("/{lc_id}/amendments")
+def list_lc_amendments(
+    lc_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_tenant_db),
+):
+    lc = db.query(LCMaster).filter(LCMaster.lc_id == lc_id).first()
+    if not lc:
+        raise HTTPException(status_code=404, detail="LC not found")
+    rows = (db.query(LCAmendment)
+              .filter(LCAmendment.lc_id == lc_id)
+              .order_by(LCAmendment.created_at.desc(), LCAmendment.amendment_id.desc())
+              .all())
+    items = []
+    for a in rows:
+        changer = a.changer.full_name if a.changer else None
+        items.append({
+            "amendment_id": a.amendment_id,
+            "field_name": a.field_name,
+            "old_value": a.old_value,
+            "new_value": a.new_value,
+            "changed_by": a.changed_by,
+            "changed_by_name": changer,
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+        })
+    return {"lc_id": lc_id, "count": len(items), "items": items}
 
 
 @router.get("/{lc_id}")
@@ -457,6 +497,10 @@ def update_lc(
     lc = db.query(LCMaster).filter(LCMaster.lc_id == lc_id).first()
     if not lc:
         raise HTTPException(status_code=404, detail="LC not found")
+
+    prod = db.query(LCProduct).filter(LCProduct.lc_id == lc_id).order_by(LCProduct.line_id).first()
+    old_lc = {f: getattr(lc, f) for f in _AMEND_LC_FIELDS}
+    old_prod = {f: getattr(prod, f) if prod else None for f in _AMEND_PROD_FIELDS}
 
     if "lc_number" in data and not str(data.get("lc_number") or "").strip():
         raise HTTPException(status_code=400, detail="LC Number cannot be empty")
@@ -521,6 +565,25 @@ def update_lc(
         apply_allocations(db, lc, data["buyer_allocation"], lc_qty, lc_amount)
 
     normalize_lc_master(lc, db)
+
+    prod_after = prod or db.query(LCProduct).filter(LCProduct.lc_id == lc_id).order_by(LCProduct.line_id).first()
+    for f in _AMEND_LC_FIELDS:
+        ov, nv = old_lc[f], getattr(lc, f)
+        if _amend_snap(ov) != _amend_snap(nv):
+            db.add(LCAmendment(
+                lc_id=lc_id, field_name=f,
+                old_value=_amend_snap(ov), new_value=_amend_snap(nv),
+                changed_by=current_user.user_id,
+            ))
+    for f in _AMEND_PROD_FIELDS:
+        ov = old_prod[f]
+        nv = getattr(prod_after, f) if prod_after else None
+        if _amend_snap(ov) != _amend_snap(nv):
+            db.add(LCAmendment(
+                lc_id=lc_id, field_name=f,
+                old_value=_amend_snap(ov), new_value=_amend_snap(nv),
+                changed_by=current_user.user_id,
+            ))
 
     db.commit()
     db.refresh(lc)

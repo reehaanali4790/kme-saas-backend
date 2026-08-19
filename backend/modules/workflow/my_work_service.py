@@ -12,8 +12,9 @@ from modules.shipments import demurrage_service as dem_svc
 # Cost-relevant alert types surfaced prominently
 _COST_ALERT_TYPES = frozenset({
     "GD_FILING_DUE", "GD_FILING_OVERDUE", "GD_LATE_FILED",
-    "DEMURRAGE", "DEMURRAGE_ACCRUING", "DEMURRAGE_AT_RISK",
+    "DEMURRAGE", "DEMURRAGE_ACCRUING", "DEMURRAGE_AT_RISK", "CONTAINER_LFD",
     "FI_EXPIRY", "MISSING_DOCUMENT", "ARRIVAL_DOCS_MISSING",
+    "SRO_QUOTA_EXCEEDED", "SRO_QUOTA_90",
 })
 
 _TONE_RANK = {"overdue": 0, "expired": 0, "critical": 1, "due_soon": 2, "due": 2, "upcoming": 3, "ok": 4, "unknown": 5}

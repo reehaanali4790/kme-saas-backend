@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from core.tenant import get_tenant_db
+from core.plan_limits import require_plan_feature
 from models.database_models import User
 from modules.auth.dependencies import get_current_user
 from modules.reports.report_field_catalog import get_catalog, GRAINS, MASTER_GRAIN
@@ -26,8 +27,16 @@ from modules.reports.report_master_service import (
     template_to_dict,
 )
 
-router = APIRouter(prefix="/api/report-master", tags=["Report Master"])
-router_underscore = APIRouter(prefix="/api/report_master", tags=["Report Master (Underscore Alias)"])
+router = APIRouter(
+    prefix="/api/report-master",
+    tags=["Report Master"],
+    dependencies=[Depends(require_plan_feature("report_builder"))],
+)
+router_underscore = APIRouter(
+    prefix="/api/report_master",
+    tags=["Report Master (Underscore Alias)"],
+    dependencies=[Depends(require_plan_feature("report_builder"))],
+)
 
 
 class TemplateCreate(BaseModel):

@@ -119,4 +119,4 @@ And ensure this backend has:
 | App won't start: production safety | Set `DEBUG=false`, real `SECRET_KEY`, explicit `ALLOWED_ORIGINS` |
 | Health check degraded | Postgres not linked or migrations failed — check deploy logs |
 | Uploads lost on redeploy | Attach a volume at `/data` |
-| Duplicate cron jobs | Only one instance should have `ENABLE_SCHEDULER=true` |
+| Duplicate cron jobs | Redis leader lock elects one replica; without Redis set `ENABLE_SCHEDULER=true` on only one instance |
